@@ -24,7 +24,7 @@ type ShellCtx = { studioUrl?: string };
 
 export default function LandingPage() {
   const { studioUrl } = useOutletContext<ShellCtx>();
-  const studio = studioUrl || 'https://solvamos.ai.studio';
+  const studio = studioUrl || 'https://solvamos-studio-74094114833.asia-northeast3.run.app';
   const { lang, t } = useLang();
   const [billing, setBilling] = useState<'monthly' | 'yearly'>('monthly');
   const [step, setStep] = useState(1);

@@ -23,7 +23,7 @@ const config: CatalogConfig = {
     /\/$/,
     ''
   ),
-  studioUrl: (process.env.STUDIO_URL || 'https://solvamos.ai.studio').replace(/\/$/, ''),
+  studioUrl: (process.env.STUDIO_URL || 'https://solvamos-studio-74094114833.asia-northeast3.run.app').replace(/\/$/, ''),
   adminSecret: process.env.CATALOG_ADMIN_SECRET || '',
   storePath:
     process.env.CATALOG_STORE_PATH ||

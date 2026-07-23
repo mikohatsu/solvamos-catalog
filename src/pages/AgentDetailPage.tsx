@@ -12,7 +12,7 @@ export default function AgentDetailPage() {
   const { studioUrl: shellStudio } = useOutletContext<ShellCtx>();
   const { t } = useLang();
   const [agent, setAgent] = useState<PublicAgent | null>(null);
-  const [studioUrl, setStudioUrl] = useState(shellStudio || 'https://solvamos.ai.studio');
+  const [studioUrl, setStudioUrl] = useState(shellStudio || 'https://solvamos-studio-74094114833.asia-northeast3.run.app');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);

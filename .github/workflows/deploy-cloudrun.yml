@@ -22,7 +22,7 @@ env:
   AR_REPO: solvamos-img
   SERVICE: solvamos-catalog
   IMAGE_NAME: catalog
-  STUDIO_URL: https://solvamos.ai.studio
+  STUDIO_URL: https://solvamos-studio-74094114833.asia-northeast3.run.app
   NODE_VERSION: '22'
 
 jobs:

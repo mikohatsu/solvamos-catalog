@@ -9,7 +9,7 @@ export default function SiteHeader({
   studioUrl?: string;
   agentCount?: number;
 }) {
-  const studio = studioUrl || 'https://solvamos.ai.studio';
+  const studio = studioUrl || 'https://solvamos-studio-74094114833.asia-northeast3.run.app';
   const { lang, setLang, t } = useLang();
   const navigate = useNavigate();
 

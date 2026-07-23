@@ -53,7 +53,7 @@ Set on Cloud Run:
 
 ```env
 PUBLIC_BASE_URL=https://solvamos-catalog-2ggrwml2ba-du.a.run.app
-STUDIO_URL=https://solvamos-studio-2ggrwml2ba-du.a.run.app
+STUDIO_URL=https://solvamos-studio-74094114833.asia-northeast3.run.app
 CATALOG_ADMIN_SECRET=<shared>
 ```
 

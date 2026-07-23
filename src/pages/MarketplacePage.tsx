@@ -113,7 +113,7 @@ export default function MarketplacePage() {
     [catalog]
   );
 
-  const studio = catalog?.studio_url || studioUrl || 'https://solvamos.ai.studio';
+  const studio = catalog?.studio_url || studioUrl || 'https://solvamos-studio-74094114833.asia-northeast3.run.app';
   const activeCount = catalog?.agents?.length ?? 0;
   const totalCount = catalog?.agent_count ?? activeCount;
 

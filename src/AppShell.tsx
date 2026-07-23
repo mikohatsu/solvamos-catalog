@@ -4,7 +4,7 @@ import SiteHeader from './components/SiteHeader';
 import { LangProvider } from './lang';
 
 export default function AppShell() {
-  const [studioUrl, setStudioUrl] = useState('https://solvamos.ai.studio');
+  const [studioUrl, setStudioUrl] = useState('https://solvamos-studio-74094114833.asia-northeast3.run.app');
   const [agentCount, setAgentCount] = useState(0);
 
   useEffect(() => {
