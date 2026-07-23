@@ -1,23 +1,43 @@
 import { useEffect, useMemo, useState } from 'react';
-import { motion } from 'motion/react';
-import { Bot, Filter, RefreshCw, Search, Wallet } from 'lucide-react';
-import type { CatalogResponse } from '../types';
-import SiteHeader from '../components/SiteHeader';
-import CopyButton from '../components/CopyButton';
-import AgentCard from '../components/AgentCard';
+import { useNavigate, useOutletContext } from 'react-router-dom';
+import {
+  Activity,
+  Check,
+  Clock,
+  Copy,
+  Database,
+  FileText,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Wallet,
+  Zap,
+} from 'lucide-react';
+import type { MouseEvent } from 'react';
+import type { CatalogResponse, PublicAgent } from '../types';
+import { useLang } from '../lang';
 
-type FilterMode = 'all' | 'paid' | 'free';
+type ShellCtx = { studioUrl: string; setAgentCount?: (n: number) => void };
+
+const DEFAULT_CATEGORIES = [
+  'All',
+  'HR & Policy',
+  'Legal & Compliance',
+  'Tech Support',
+  'Finance',
+] as const;
 
 export default function MarketplacePage() {
+  const { studioUrl, setAgentCount } = useOutletContext<ShellCtx>();
+  const { t } = useLang();
+  const navigate = useNavigate();
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [category, setCategory] = useState<string>('All');
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<FilterMode>('all');
-  const [copied, setCopied] = useState<string | null>(null);
-
-  const apiUrl =
-    typeof window !== 'undefined' ? `${window.location.origin}/api/catalog` : '/api/catalog';
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -26,11 +46,12 @@ export default function MarketplacePage() {
       const res = await fetch('/api/catalog', { cache: 'no-store' });
       const data = (await res.json()) as CatalogResponse & { message?: string };
       if (!res.ok || data.status === 'error') {
-        throw new Error(data.message || '카탈로그를 불러오지 못했습니다.');
+        throw new Error(data.message || t('카탈로그를 불러오지 못했습니다.', 'Failed to load catalog.'));
       }
       setCatalog(data);
+      setAgentCount?.(data.agent_count ?? data.agents?.length ?? 0);
     } catch (err: any) {
-      setError(err?.message || '카탈로그 요청 실패');
+      setError(err?.message || t('카탈로그 요청 실패', 'Catalog request failed'));
     } finally {
       setLoading(false);
     }
@@ -40,166 +61,325 @@ export default function MarketplacePage() {
     void load();
   }, []);
 
-  const copy = async (value: string, key: string) => {
-    await navigator.clipboard.writeText(value);
-    setCopied(key);
-    window.setTimeout(() => setCopied(null), 1500);
-  };
+  const categories = useMemo(() => {
+    const fromAgents = new Set(
+      (catalog?.agents || [])
+        .map((a) => a.category || a.role || '')
+        .filter(Boolean)
+    );
+    const merged = [...DEFAULT_CATEGORIES];
+    for (const c of fromAgents) {
+      if (!merged.includes(c as (typeof DEFAULT_CATEGORIES)[number]) && c !== 'All') {
+        merged.push(c);
+      }
+    }
+    return merged;
+  }, [catalog]);
 
   const agents = useMemo(() => {
     const rows = catalog?.agents || [];
     const q = query.trim().toLowerCase();
     return rows.filter((a) => {
-      if (filter === 'paid' && !(a.fee_usdc > 0)) return false;
-      if (filter === 'free' && a.fee_usdc > 0) return false;
+      const cat = a.category || a.role || '';
+      const catOk = category === 'All' || cat === category;
+      if (!catOk) return false;
       if (!q) return true;
       return (
         a.title.toLowerCase().includes(q) ||
         a.description.toLowerCase().includes(q) ||
         a.fqn.toLowerCase().includes(q) ||
-        (a.role || '').toLowerCase().includes(q) ||
-        a.tags.some((t) => t.toLowerCase().includes(q))
+        cat.toLowerCase().includes(q) ||
+        a.tags.some((tag) => tag.toLowerCase().includes(q))
       );
     });
-  }, [catalog, query, filter]);
+  }, [catalog, query, category]);
 
-  const studioUrl = catalog?.studio_url || 'https://solvamos.ai.studio';
+  const totalInvocations = useMemo(
+    () =>
+      (catalog?.agents || []).reduce((sum, a) => {
+        const m = (a as PublicAgent & { metrics?: { totalCalls?: number } }).metrics;
+        return sum + (m?.totalCalls ?? 0);
+      }, 0),
+    [catalog]
+  );
+
+  const usdcSettled = useMemo(
+    () =>
+      (catalog?.agents || []).reduce((sum, a) => {
+        const m = (a as PublicAgent & { metrics?: { totalRevenueUsdc?: number } }).metrics;
+        if (typeof m?.totalRevenueUsdc === 'number') return sum + m.totalRevenueUsdc;
+        return sum;
+      }, 0),
+    [catalog]
+  );
+
+  const studio = catalog?.studio_url || studioUrl || 'https://solvamos.ai.studio';
+  const activeCount = catalog?.agents?.length ?? 0;
+  const totalCount = catalog?.agent_count ?? activeCount;
+
+  const copyApi = async (e: MouseEvent, agent: PublicAgent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await navigator.clipboard.writeText(agent.invoke_url);
+    setCopiedId(agent.agent_id);
+    window.setTimeout(() => setCopiedId(null), 2000);
+  };
 
   return (
-    <div className="mesh min-h-screen text-on-surface">
-      <div className="mx-auto max-w-6xl px-5 pb-20 pt-8 md:px-10 md:pt-12">
-        <SiteHeader studioUrl={studioUrl} />
-
-        <header className="mb-8">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary">
-            Public marketplace
-          </p>
-          <h1 className="text-3xl font-bold md:text-4xl">Agent directory</h1>
-          <p className="mt-2 max-w-2xl text-on-surface-variant">
-            Studio가 게시한 에이전트입니다. 카탈로그 저장소(이 서비스)가 원본이며, 외부 사이트는
-            `/api/catalog`를 긁어 표시하면 됩니다.
-          </p>
-        </header>
-
-        <section className="glass-panel mb-8 rounded-xl p-5">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wider text-solana-green">
-                Scrape /api/catalog · pay.sh 스타일
-              </p>
-              <p className="mt-1 break-all font-mono text-sm text-on-surface">{apiUrl}</p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <CopyButton
-                copied={copied === 'catalog-api'}
-                onClick={() => copy(apiUrl, 'catalog-api')}
-                label="복사"
-              />
-              <button
-                type="button"
-                onClick={() => void load()}
-                className="inline-flex items-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm hover:bg-surface-container-highest"
-              >
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                새로고침
-              </button>
-            </div>
-          </div>
-          {catalog && (
-            <div className="mt-4 flex flex-wrap gap-4 border-t border-outline-variant/20 pt-4 text-xs text-on-surface-variant">
-              <Stat label="Agents" value={String(catalog.agent_count)} />
-              <Stat label="Paid" value={String(catalog.paid_count)} />
-              <Stat label="Free" value={String(catalog.free_count)} />
-              <Stat label="Protocol" value={catalog.protocol} />
-            </div>
-          )}
-        </section>
-
-        <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div className="space-y-10 pb-20 pt-8">
+      {/* Hero + stats — match solvamos.ai.studio Live Services */}
+      <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 p-6 shadow-xl sm:p-10">
+        <div className="pointer-events-none absolute top-0 right-0 h-96 w-96 rounded-full bg-cyan-500/10 blur-3xl" />
+        <div className="relative z-10 flex flex-col justify-between gap-6 md:flex-row md:items-center">
           <div>
-            <h2 className="text-xl font-semibold">Listed agents</h2>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <label className="relative min-w-[220px]">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="검색: 이름, 태그, fqn…"
-                className="w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest py-2 pl-9 pr-3 text-sm outline-none focus:border-google-blue"
-              />
-            </label>
-            <div className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/40 bg-surface-container-lowest p-1">
-              <Filter className="ml-2 h-3.5 w-3.5 text-outline" />
-              {(['all', 'paid', 'free'] as FilterMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setFilter(mode)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold capitalize ${
-                    filter === mode
-                      ? 'bg-google-blue/20 text-google-blue'
-                      : 'text-on-surface-variant hover:bg-surface-container-high'
-                  }`}
-                >
-                  {mode}
-                </button>
-              ))}
+            <div className="mb-3 inline-flex items-center space-x-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 font-mono text-xs text-cyan-300">
+              <Sparkles className="h-3.5 w-3.5 animate-pulse text-cyan-400" />
+              <span>SOLVAMOS INTERNAL AGENT CATALOG API</span>
             </div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-4xl">
+              {t('라이브 AI 에이전트 카탈로그', 'Live AI Agent Catalog')}
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-400">
+              {t(
+                'GCP Vertex AI Vector Search RAG와 Solana pay.sh 온체인 정산이 결합된 검증된 엔터프라이즈 AI 에이전트 목록입니다.',
+                'Verified enterprise AI agents powered by GCP Vertex AI RAG and micro-metered via Solana pay.sh.'
+              )}
+            </p>
           </div>
+          <a
+            href={studio}
+            className="flex shrink-0 items-center space-x-2 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/20 transition-all hover:opacity-95"
+          >
+            <Zap className="h-4 w-4 fill-cyan-300/30 text-cyan-300" />
+            <span>{t('+ 신규 에이전트 등록', '+ Deploy New Agent')}</span>
+          </a>
         </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-24 text-on-surface-variant">
-            <RefreshCw className="h-5 w-5 animate-spin" /> 카탈로그 불러오는 중…
-          </div>
-        ) : error ? (
-          <div className="rounded-xl border border-error/30 bg-error/10 p-5 text-error">{error}</div>
-        ) : agents.length === 0 ? (
-          <div className="glass-panel rounded-xl p-12 text-center text-on-surface-variant">
-            <Bot className="mx-auto mb-3 h-10 w-10 text-outline" />
-            조건에 맞는 에이전트가 없습니다.
-          </div>
-        ) : (
-          <motion.div
-            initial="hidden"
-            animate="show"
-            variants={{
-              hidden: {},
-              show: { transition: { staggerChildren: 0.06 } },
-            }}
-            className="grid gap-5 lg:grid-cols-2"
-          >
-            {agents.map((agent) => (
-              <AgentCard key={agent.catalog_id} agent={agent} copied={copied} onCopy={copy} />
-            ))}
-          </motion.div>
-        )}
-
-        <footer className="mt-16 border-t border-outline-variant/20 pt-8 text-sm text-outline">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <p className="inline-flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-solana-green" />
-              Payments settle with Solana USDC via x402 / MPP.
-            </p>
-            <a
-              href={studioUrl}
-              className="inline-flex items-center gap-1 font-semibold text-google-blue hover:underline"
-            >
-              Studio 플랫폼으로 이동 →
-            </a>
-          </div>
-        </footer>
+        <div className="relative z-10 mt-8 grid grid-cols-2 gap-4 border-t border-slate-800/80 pt-6 font-mono text-xs sm:grid-cols-4">
+          <StatCard
+            label="Active Agents"
+            value={`${activeCount} / ${totalCount}`}
+            valueClass="text-cyan-400"
+          />
+          <StatCard
+            label="Total Invocations"
+            value={totalInvocations.toLocaleString()}
+            valueClass="text-white"
+          />
+          <StatCard
+            label="USDC Settled"
+            value={`$${usdcSettled.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+            valueClass="text-emerald-400"
+          />
+          <StatCard label="Avg Response Time" value="~435ms" valueClass="text-indigo-400" />
+        </div>
       </div>
+
+      {/* Category + search */}
+      <div className="flex flex-col items-stretch justify-between gap-4 lg:flex-row lg:items-center">
+        <div className="flex items-center space-x-2 overflow-x-auto pb-2 scrollbar-none lg:pb-0">
+          {categories.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setCategory(c)}
+              className={`rounded-xl px-4 py-2 text-xs font-medium whitespace-nowrap transition-all ${
+                category === c
+                  ? 'border border-cyan-500/50 bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 text-cyan-300 shadow-sm'
+                  : 'border border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+              }`}
+            >
+              {c === 'All' ? t('전체 카테고리', 'All Categories') : c}
+            </button>
+          ))}
+        </div>
+        <div className="relative min-w-[280px]">
+          <Search className="absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('에이전트 이름 또는 키워드 검색...', 'Search agents or keywords...')}
+            className="w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pr-4 pl-10 text-xs text-white placeholder-slate-500 transition-all focus:border-cyan-500 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 py-24 text-slate-400">
+          <RefreshCw className="h-5 w-5 animate-spin" /> {t('카탈로그 불러오는 중…', 'Loading catalog…')}
+        </div>
+      ) : error ? (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-5 text-rose-300">{error}</div>
+      ) : agents.length === 0 ? (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-12 text-center text-slate-400">
+          {t('조건에 맞는 에이전트가 없습니다.', 'No agents match your filters.')}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          {agents.map((agent) => (
+            <CatalogAgentCard
+              key={agent.catalog_id}
+              agent={agent}
+              copied={copiedId === agent.agent_id}
+              onCopy={(e) => void copyApi(e, agent)}
+              onOpen={() => navigate(`/a/${encodeURIComponent(agent.agent_id)}`)}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function StatCard({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  valueClass: string;
+}) {
   return (
-    <div>
-      <span className="text-outline">{label}</span>
-      <span className="ml-2 font-mono text-on-surface">{value}</span>
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+      <div className="text-slate-400 uppercase">{label}</div>
+      <div className={`mt-1 text-lg font-bold ${valueClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function CatalogAgentCard({
+  agent,
+  copied,
+  onCopy,
+  onOpen,
+  t,
+}: {
+  agent: PublicAgent;
+  copied: boolean;
+  onCopy: (e: MouseEvent) => void;
+  onOpen: () => void;
+  t: (kr: string, en: string) => string;
+}) {
+  const category = agent.category || agent.role || 'General';
+  const status = 'ACTIVE';
+  const version = agent.tags.find((x) => /^v?\d/.test(x)) || 'v1.0';
+  const metrics = (agent as PublicAgent & {
+    metrics?: { totalCalls?: number; avgLatencyMs?: number };
+  }).metrics;
+  const calls = metrics?.totalCalls ?? 0;
+  const latency = metrics?.avgLatencyMs ?? 435;
+  const ragDocs = agent.endpoint_count || agent.tags.filter((x) => /doc|rag|pdf/i.test(x)).length || 0;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="group relative flex cursor-pointer flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/80 p-6 transition-all duration-300 hover:border-cyan-500/50 hover:shadow-2xl hover:shadow-cyan-500/10"
+    >
+      <div>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <div className="mb-1.5 flex flex-wrap items-center gap-y-1 space-x-2">
+              <span className="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-0.5 font-mono text-[11px] text-cyan-400">
+                {category}
+              </span>
+              <span className="flex items-center space-x-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-400">
+                <span className="h-1.5 w-1.5 animate-ping rounded-full bg-emerald-400" />
+                <span>{status}</span>
+              </span>
+              <span className="font-mono text-[10px] text-slate-500">{version}</span>
+            </div>
+            <h3 className="flex items-center space-x-2 text-xl font-bold text-white transition-colors group-hover:text-cyan-300">
+              <span>{agent.title}</span>
+            </h3>
+          </div>
+          <div
+            className="shrink-0 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-1.5 text-cyan-400"
+            title="Verified SolVamos Agent"
+          >
+            <ShieldCheck className="h-5 w-5" />
+          </div>
+        </div>
+
+        <p className="mb-6 line-clamp-2 text-xs leading-relaxed text-slate-300">
+          {agent.description || agent.use_case}
+        </p>
+
+        <div className="mb-6 grid grid-cols-2 gap-3 rounded-xl border border-slate-800/80 bg-slate-950/80 p-3 font-mono text-xs">
+          <div>
+            <div className="text-[10px] text-slate-500 uppercase">Cost / Query</div>
+            <div className="mt-0.5 flex items-center space-x-1 text-sm font-bold text-cyan-400">
+              <Wallet className="h-3.5 w-3.5 text-indigo-400" />
+              <span>
+                ${agent.fee_usdc} USDC
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-500 uppercase">Vertex RAG Docs</div>
+            <div className="mt-0.5 flex items-center space-x-1 text-sm font-bold text-white">
+              <Database className="h-3.5 w-3.5 text-cyan-400" />
+              <span>
+                {ragDocs} Linked Docs
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-4 flex items-center justify-between border-t border-slate-800/60 pt-3 font-mono text-[11px] text-slate-400">
+          <div className="flex items-center space-x-1">
+            <Activity className="h-3.5 w-3.5 text-emerald-400" />
+            <span>{calls.toLocaleString()} Calls</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <Clock className="h-3.5 w-3.5 text-indigo-400" />
+            <span>{latency}ms Avg</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onCopy}
+            className="flex items-center justify-center space-x-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-xs font-medium text-slate-200 transition-all hover:bg-slate-700"
+          >
+            {copied ? (
+              <>
+                <Check className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="text-emerald-400">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="h-3.5 w-3.5 text-slate-400" />
+                <span>Copy A2A API</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+            className="flex items-center justify-center space-x-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition-all group-hover:border-cyan-500/60 hover:bg-cyan-500/20"
+          >
+            <FileText className="h-3.5 w-3.5 fill-cyan-400/20 text-cyan-400" />
+            <span>{t('상세페이지 / 데모', 'Detail & Demo')}</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

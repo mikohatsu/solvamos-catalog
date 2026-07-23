@@ -1,13 +1,19 @@
-# CI/CD: solvamos-catalog → Cloud Run
-name: Deploy Cloud Run
+# CI: review → build → (main만) Cloud Run 배포
+# 인증: GitHub Variables WIF_PROVIDER + WIF_SERVICE_ACCOUNT (Studio와 동일 값)
+#        또는 Secret GCP_SA_KEY 폴백
+# 주의: .env의 GOOGLE_APPLICATION_CREDENTIALS JSON은 CI에 넣지 않음 (로컬 ADC용)
+
+name: CI / Deploy Cloud Run
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: catalog-deploy-${{ github.ref }}
+  group: catalog-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -15,25 +21,67 @@ env:
   REGION: asia-northeast3
   AR_REPO: solvamos-img
   SERVICE: solvamos-catalog
-  IMAGE: catalog
-  STUDIO_URL: https://solvamos-studio-2ggrwml2ba-du.a.run.app
+  IMAGE_NAME: catalog
+  STUDIO_URL: https://solvamos.ai.studio
+  NODE_VERSION: '22'
 
 jobs:
   review:
     name: Review
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npm run lint
+      - name: Typecheck
+        run: npm run lint
+      - name: Guard committed secrets
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -E '(^|/)\.env$|\.pem$|credentials\.json$|github-deploy-key\.json$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Secret-like files must not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "No secret-like tracked files."
+
+  build-test:
+    name: Build test
+    needs: [review]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Assert artifacts
+        run: |
+          set -euo pipefail
+          test -f dist/server.mjs
+          test -d dist/client
+          echo "Artifacts OK"
+          ls -la dist | head -30
 
   deploy:
-    name: Build & Deploy
-    needs: [review]
+    name: Deploy Cloud Run
+    needs: [review, build-test]
+    if: >
+      always() &&
+      needs.review.result == 'success' &&
+      needs.build-test.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,53 +89,156 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
+      - name: Apply optional repo Variables
+        run: |
+          if [ -n "${{ vars.GCP_PROJECT_ID }}" ]; then
+            echo "PROJECT_ID=${{ vars.GCP_PROJECT_ID }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ vars.GCP_REGION }}" ]; then
+            echo "REGION=${{ vars.GCP_REGION }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ vars.GCP_AR_REPO }}" ]; then
+            echo "AR_REPO=${{ vars.GCP_AR_REPO }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ vars.STUDIO_URL }}" ]; then
+            echo "STUDIO_URL=${{ vars.STUDIO_URL }}" >> "$GITHUB_ENV"
+          fi
+          echo "Using PROJECT_ID=${PROJECT_ID} REGION=${REGION} SERVICE=${SERVICE}"
+
+      - name: Short SHA
+        id: meta
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Require GCP auth config
+        run: |
+          if [ -z "${{ vars.WIF_PROVIDER }}" ] || [ -z "${{ vars.WIF_SERVICE_ACCOUNT }}" ]; then
+            if [ -z "${{ secrets.GCP_SA_KEY }}" ]; then
+              echo "::error::Set repo Variables WIF_PROVIDER + WIF_SERVICE_ACCOUNT (or Secret GCP_SA_KEY) on THIS repository (${{ github.repository }})."
+              echo "Copy the same Variable values from solvamos-studio — do NOT paste .env SA JSON into the workflow."
+              exit 1
+            fi
+            echo "Auth mode: SA key"
+          else
+            echo "Auth mode: WIF"
+            echo "SA: ${{ vars.WIF_SERVICE_ACCOUNT }}"
+            echo "Repo: ${{ github.repository }}"
+          fi
+
+      - name: Authenticate to Google Cloud (WIF)
         id: auth
+        if: ${{ vars.WIF_PROVIDER != '' && vars.WIF_SERVICE_ACCOUNT != '' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 3600s
+
+      - name: Authenticate to Google Cloud (SA key fallback)
+        id: auth-key
+        if: ${{ vars.WIF_PROVIDER == '' || vars.WIF_SERVICE_ACCOUNT == '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          token_format: access_token
+          access_token_lifetime: 3600s
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Build and push
+      - name: Export registry access token
+        id: token
         run: |
           set -euo pipefail
-          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE}"
-          TAG="${GITHUB_SHA::7}"
-          docker build -t "${IMAGE_URI}:${TAG}" -t "${IMAGE_URI}:latest" .
-          docker push "${IMAGE_URI}:${TAG}"
-          docker push "${IMAGE_URI}:latest"
-          echo "IMAGE_URI=${IMAGE_URI}:${TAG}" >> "$GITHUB_ENV"
+          TOKEN="${{ steps.auth.outputs.access_token }}"
+          if [ -z "${TOKEN}" ]; then
+            TOKEN="${{ steps.auth-key.outputs.access_token }}"
+          fi
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::GCP auth produced no access_token. Check WIF Variables on ${{ github.repository }} and pool attribute.repository binding for solvamos-catalog."
+            exit 1
+          fi
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.token.outputs.token }}
+
+      - name: Ensure Artifact Registry repo exists
+        run: |
+          set -euo pipefail
+          if ! gcloud artifacts repositories describe "${AR_REPO}" \
+            --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            gcloud artifacts repositories create "${AR_REPO}" \
+              --repository-format=docker \
+              --location="${REGION}" \
+              --project="${PROJECT_ID}"
+          fi
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker build -t "${IMAGE}:${SHA}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${SHA}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${SHA}" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
         run: |
           set -euo pipefail
-          # First deploy may not know final URL; use placeholder then update.
           gcloud run deploy "${SERVICE}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
-            --image="${IMAGE_URI}" \
             --platform=managed \
-            --allow-unauthenticated \
+            --image="${IMAGE_URI}" \
             --port=8080 \
+            --allow-unauthenticated \
             --memory=512Mi \
             --cpu=1 \
             --min-instances=0 \
             --max-instances=3 \
-            --set-env-vars="NODE_ENV=production,STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
+            --update-env-vars="NODE_ENV=production,STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
 
-          URL="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
+      - name: Bind PUBLIC_BASE_URL + optional admin secret
+        env:
+          PROJECT_NUMBER_VAR: ${{ vars.GCP_PROJECT_NUMBER }}
+        run: |
+          set -euo pipefail
+          PROJECT_NUMBER="${PROJECT_NUMBER_VAR:-74094114833}"
+          URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
+          # Prefer live describe URL when available
+          LIVE="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)' 2>/dev/null || true)"
+          if [ -n "${LIVE}" ]; then
+            URL="${LIVE}"
+          fi
+
           gcloud run services update "${SERVICE}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --update-env-vars="PUBLIC_BASE_URL=${URL},STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
 
-          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Service: \`${SERVICE}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- URL: ${URL}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`${IMAGE_URI}\`" >> "$GITHUB_STEP_SUMMARY"
+          # catalog-admin-secret must exist in Secret Manager (create once outside CI)
+          if gcloud secrets describe catalog-admin-secret --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            gcloud run services update "${SERVICE}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --update-secrets="CATALOG_ADMIN_SECRET=catalog-admin-secret:latest"
+            echo "Bound CATALOG_ADMIN_SECRET from Secret Manager"
+          else
+            echo "::warning::Secret Manager 'catalog-admin-secret' missing — create it, then re-run deploy. Studio publish will fail without it."
+          fi
+
+          {
+            echo "### Deployed"
+            echo "- Service: \`${SERVICE}\`"
+            echo "- URL: ${URL}"
+            echo "- Image: \`${IMAGE_URI}\`"
+            echo "- Studio: ${STUDIO_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"

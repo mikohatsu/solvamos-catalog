@@ -15,13 +15,13 @@ export default function CopyButton({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-google-blue/15 text-google-blue hover:bg-google-blue/25 ${
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 ${
         compact ? 'p-2' : 'px-3 py-2 text-sm'
       }`}
-      title="복사"
+      title="Copy"
     >
       {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-      {!compact && (copied ? '복사됨' : label || '복사')}
+      {!compact && (copied ? 'Copied' : label || 'Copy')}
     </button>
   );
 }

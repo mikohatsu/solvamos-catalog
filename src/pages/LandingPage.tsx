@@ -1,315 +1,520 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
-import { motion } from 'motion/react';
 import {
   ArrowRight,
-  Boxes,
+  Blocks,
+  Check,
   Cloud,
-  Cpu,
-  Link2,
+  CloudLightning,
+  Database,
+  FileText,
+  HardDrive,
+  Layers,
+  Lock,
+  Network,
+  Server,
   Shield,
   Sparkles,
   Wallet,
+  Zap,
 } from 'lucide-react';
-import SiteHeader from '../components/SiteHeader';
-import type { CatalogResponse } from '../types';
+import { Link, useOutletContext } from 'react-router-dom';
+import { useState, type ReactNode } from 'react';
+import { useLang } from '../lang';
+
+type ShellCtx = { studioUrl?: string };
 
 export default function LandingPage() {
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
-
-  useEffect(() => {
-    void fetch('/api/catalog', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data: CatalogResponse) => {
-        if (data.status === 'success' || data.agents) setCatalog(data);
-      })
-      .catch(() => undefined);
-  }, []);
-
-  const studioUrl = catalog?.studio_url || 'https://solvamos.ai.studio';
+  const { studioUrl } = useOutletContext<ShellCtx>();
+  const studio = studioUrl || 'https://solvamos.ai.studio';
+  const { lang, t } = useLang();
+  const [billing, setBilling] = useState<'monthly' | 'yearly'>('monthly');
+  const [step, setStep] = useState(1);
 
   return (
-    <div className="mesh min-h-screen text-on-surface">
-      <div className="mx-auto max-w-6xl px-5 pb-24 pt-8 md:px-10 md:pt-10">
-        <SiteHeader studioUrl={studioUrl} />
+    <div className="space-y-24 pb-20">
+      {/* Hero — identical structure to solvamos.ai.studio overview */}
+      <section className="relative overflow-hidden pt-12 lg:pt-20">
+        <div className="pointer-events-none absolute top-1/4 left-1/2 h-[350px] w-[600px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-tr from-cyan-500/20 via-indigo-500/20 to-purple-500/10 blur-[120px]" />
+        <div className="relative z-10 text-center">
+          <div className="mb-8 inline-flex items-center space-x-2 rounded-full border border-cyan-500/30 bg-slate-900/90 px-3.5 py-1.5 text-xs font-semibold text-cyan-300 shadow-lg shadow-cyan-500/10">
+            <Sparkles className="h-4 w-4 animate-pulse text-cyan-400" />
+            <span>
+              {t(
+                'GCP Vertex AI RAG × Solana pay.sh 402 온체인 정산 연동',
+                'GCP Vertex AI RAG × Solana pay.sh 402 On-Chain Settlement Protocol'
+              )}
+            </span>
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+          </div>
 
-        {/* Hero — solvamos.ai.studio composition */}
-        <header className="relative mb-16 overflow-hidden rounded-2xl border border-white/10 px-6 py-14 md:px-12 md:py-20">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(66,133,244,0.26),transparent_55%),radial-gradient(ellipse_at_bottom_left,rgba(20,241,149,0.14),transparent_50%)]" />
-          <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.55, ease: 'easeOut' }}
-            className="relative"
-          >
-            <p className="mb-4 text-xs font-semibold uppercase tracking-[0.2em] text-solana-green md:text-sm">
-              GCP Vertex AI RAG × Solana x402/MPP 온체인 정산
-            </p>
-            <div className="mb-6 flex items-center gap-4">
-              <img
-                src="/logo.png"
-                alt="SolVamos"
-                className="h-14 w-14 object-contain md:h-16 md:w-16"
-              />
-              <h1 className="text-4xl font-bold tracking-tight text-primary md:text-6xl">
-                SolVamos
-              </h1>
-            </div>
-            <h2 className="max-w-3xl text-2xl font-bold leading-tight tracking-tight text-on-surface md:text-4xl">
-              사내 문서와 데이터를 유료 AI 에이전트로 전환하고,
-              <br className="hidden md:block" /> 공개 카탈로그에서 바로 호출하세요
-            </h2>
-            <p className="mt-5 max-w-2xl text-base leading-relaxed text-on-surface-variant md:text-lg">
-              SolVamos Catalog는 Studio에서 게시한 에이전트의 공개 디스커버리 허브입니다. A2A
-              REST·Agent Card·x402/MPP 결제 URL을 한곳에서 제공하고, 빌더는 Studio 플랫폼에서
-              완성합니다.
-            </p>
-            <div className="mt-9 flex flex-wrap gap-3">
-              <a
-                href={studioUrl}
-                className="inline-flex items-center gap-2 rounded-lg bg-google-blue px-5 py-3 text-sm font-semibold text-white"
-              >
-                <Sparkles className="h-4 w-4" />
-                3분 만에 AI 에이전트 배포하기
-              </a>
-              <Link
-                to="/marketplace"
-                className="inline-flex items-center gap-2 rounded-lg border border-solana-green/40 bg-solana-green/10 px-5 py-3 text-sm font-semibold text-solana-green"
-              >
-                라이브 에이전트 둘러보기
-                <ArrowRight className="h-4 w-4" />
-              </Link>
-            </div>
-            <div className="mt-10 flex flex-wrap gap-2">
-              {[
-                'GCP Vertex AI Vector Search',
-                'Solana x402 / MPP',
-                'A2A REST API',
-                'Cloud Run Serverless',
-              ].map((badge) => (
-                <span
-                  key={badge}
-                  className="rounded-md border border-outline-variant/40 bg-surface-container-lowest/80 px-3 py-1.5 text-[11px] font-medium text-on-surface-variant"
-                >
-                  {badge}
+          <h1 className="mx-auto max-w-5xl text-4xl leading-[1.15] font-black tracking-tight text-white sm:text-6xl lg:text-7xl">
+            {lang === 'kr' ? (
+              <>
+                사내 문서와 데이터를{' '}
+                <br className="hidden sm:inline" />
+                <span className="bg-gradient-to-r from-cyan-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
+                  0.01 USDC 유료 AI 에이전트
                 </span>
-              ))}
-            </div>
-          </motion.div>
-        </header>
+                로 전환하세요
+              </>
+            ) : (
+              <>
+                Monetize Your Business Data into{' '}
+                <br className="hidden sm:inline" />
+                <span className="bg-gradient-to-r from-cyan-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
+                  Paid AI Agents
+                </span>{' '}
+                Powered by Solana
+              </>
+            )}
+          </h1>
 
-        {/* Architecture */}
-        <section className="mb-20">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-outline">
-            System architecture
+          <p className="mx-auto mt-6 max-w-3xl text-lg leading-relaxed text-slate-300 sm:text-xl">
+            {t(
+              'SolVamos Studio는 Google Workspace Drive 및 사내 지식 기반을 Vertex AI Vector RAG로 인덱싱하고, Solana pay.sh 402 Payment Required 미들웨어로 결제를 적용하여 A2A(Agent-to-Agent) REST API 엔드포인트로 유료화하는 B2B 플랫폼입니다.',
+              'SolVamos Studio indexes enterprise documents via GCP Vertex AI RAG and enforces Solana pay.sh 402 micropayments over REST API endpoints for seamless Agent-to-Agent (A2A) integration.'
+            )}
           </p>
-          <h3 className="mb-3 text-2xl font-bold md:text-3xl">엔드투엔드 파이프라인 아키텍처</h3>
-          <p className="mb-8 max-w-2xl text-sm text-on-surface-variant md:text-base">
-            Studio에서 문서 수집·배포가 끝나면, Catalog가 공개 목록과 결제 가능 invoke URL을
-            노출합니다. 호출은 x402/MPP로 정산됩니다.
-          </p>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <ArchCard
-              step="Step 1"
-              title="Ingestion"
-              subtitle="Google Drive & Docs"
-              body="사내 문서·규칙을 Studio가 Vertex AI Vector RAG로 인덱싱합니다."
-              tag="GCP Vertex Vector DB"
-            />
-            <ArchCard
-              step="Step 2"
-              title="Publish"
-              subtitle="SolVamos Catalog"
-              body="에이전트 생성 시 Catalog 저장소에 등록되고 /a/:id 공개 페이지가 열립니다."
-              tag="Source of truth"
-            />
-            <ArchCard
-              step="Step 3"
-              title="402 Auth"
-              subtitle="x402 / MPP Gateway"
-              body="HTTP 402 Payment Required 시 pay fetch가 USDC 결제를 처리합니다."
-              tag="Solana Devnet / Localnet"
-            />
-            <ArchCard
-              step="Step 4"
-              title="A2A Delivery"
-              subtitle="REST · Agent Card"
-              body="외부 에이전트가 Catalog JSON·Markdown·invoke URL로 바로 연동합니다."
-              tag="OpenAPI / JSON REST"
-            />
-          </div>
-        </section>
 
-        {/* 3-step workflow */}
-        <section className="mb-20">
-          <h3 className="mb-3 text-2xl font-bold md:text-3xl">
-            3단계로 끝나는 AI 에이전트 수익화 워크플로우
-          </h3>
-          <p className="mb-8 max-w-2xl text-sm text-on-surface-variant">
-            개발자 없이도 Drive 연결부터 공개 카탈로그 게시·온체인 정산까지 이어집니다.
-          </p>
-          <div className="space-y-4">
-            <WorkflowRow
-              num="01"
-              label="Vertex AI RAG"
-              title="Google Drive 문서 연동"
-              body="Studio에서 Drive·로컬 문서를 지정하면 Vertex AI가 임베딩·인덱싱을 수행합니다."
-            />
-            <WorkflowRow
-              num="02"
-              label="x402 / MPP"
-              title="호출 단가 및 수신 지갑 설정"
-              body="쿼리당 USDC 단가와 에이전트 vault를 설정하면 게이트웨이가 402 결제를 맡습니다."
-            />
-            <WorkflowRow
-              num="03"
-              label="Catalog"
-              title="공개 카탈로그 게시 & REST 연동"
-              body="게시 즉시 Marketplace와 /api/catalog·/api/solvamos/:id 가 갱신되어 A2A 호출이 가능합니다."
-            />
-          </div>
-          <div className="mt-8">
+          <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <a
-              href={studioUrl}
-              className="inline-flex items-center gap-2 rounded-lg bg-google-blue px-5 py-3 text-sm font-semibold text-white"
+              href={studio}
+              className="group flex w-full items-center justify-center space-x-2 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-600 to-purple-600 px-8 py-4 text-base font-bold text-white shadow-xl shadow-cyan-500/25 transition-all hover:scale-[1.02] hover:shadow-cyan-500/40 sm:w-auto"
             >
-              Studio 플랫폼에서 시작하기 <ArrowRight className="h-4 w-4" />
+              <Zap className="h-5 w-5 fill-cyan-300/30 text-cyan-300 group-hover:animate-bounce" />
+              <span>{t('3분 만에 AI 에이전트 배포하기', 'Deploy Agent in 3 Mins')}</span>
+              <ArrowRight className="h-5 w-5 text-slate-200 transition-transform group-hover:translate-x-1" />
             </a>
+            <Link
+              to="/marketplace"
+              className="flex w-full items-center justify-center space-x-2 rounded-xl border border-slate-700 bg-slate-900 px-8 py-4 text-base font-semibold text-slate-200 transition-all hover:border-slate-500 hover:bg-slate-800 sm:w-auto"
+            >
+              <Layers className="h-5 w-5 text-indigo-400" />
+              <span>{t('라이브 에이전트 살펴보기', 'Explore Live Services')}</span>
+            </Link>
           </div>
-        </section>
 
-        {/* Value props */}
-        <section className="mb-20 grid gap-8 md:grid-cols-3">
-          <Value
-            icon={<Cloud className="h-5 w-5 text-google-blue" />}
-            title="서버리스 완전 관리형 Infra"
-            body="Cloud Run·Vertex 기반으로 트래픽에 맞춰 확장합니다. Catalog는 디스커버리 전용 서비스입니다."
-          />
-          <Value
-            icon={<Wallet className="h-5 w-5 text-solana-green" />}
-            title="실시간 Solana 온체인 정산"
-            body="x402/MPP로 PG 없이 USDC 마이크로 결제가 vault로 정산됩니다."
-          />
-          <Value
-            icon={<Link2 className="h-5 w-5 text-primary" />}
-            title="A2A REST API 호환"
-            body="외부 에이전트는 Catalog API만으로 가격·invoke URL·Agent Card를 가져갈 수 있습니다."
-          />
-        </section>
-
-        {/* Live catalog strip */}
-        <section className="glass-panel rounded-xl p-6 md:p-8">
-          <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-solana-green">
-                Live catalog
-              </p>
-              <p className="mt-2 text-2xl font-semibold md:text-3xl">
-                {catalog
-                  ? `${catalog.agent_count} agents · ${catalog.paid_count} paid`
-                  : 'Catalog loading…'}
-              </p>
-              <p className="mt-2 max-w-xl text-sm text-on-surface-variant">
-                공개 디스커버리 원본은 이 Catalog 서비스입니다. Studio는 에이전트를 등록하고,
-                목록은 여기서 읽어 표시합니다.
-              </p>
-              <p className="mt-3 break-all font-mono text-xs text-outline">
-                {(catalog?.base_url || window.location.origin) + '/api/catalog'}
-              </p>
+          <div className="mt-14 grid grid-cols-2 gap-6 border-t border-slate-800/80 pt-10 text-sm font-medium text-slate-400 md:grid-cols-4">
+            <div className="flex items-center justify-center space-x-2">
+              <Database className="h-5 w-5 text-cyan-400" />
+              <span>GCP Vertex AI Vector Search</span>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Link
-                to="/marketplace"
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-4 py-2.5 text-sm font-semibold hover:bg-surface-container-highest"
-              >
-                <Boxes className="h-4 w-4" /> 디렉토리 보기
-              </Link>
-              <a
-                href={studioUrl}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-google-blue px-4 py-2.5 text-sm font-semibold text-white"
-              >
-                <Cpu className="h-4 w-4" /> Studio 플랫폼
-              </a>
+            <div className="flex items-center justify-center space-x-2">
+              <Wallet className="h-5 w-5 text-indigo-400" />
+              <span>Solana pay.sh xNFT 402</span>
+            </div>
+            <div className="flex items-center justify-center space-x-2">
+              <Network className="h-5 w-5 text-purple-400" />
+              <span>A2A REST API Protocol Standard</span>
+            </div>
+            <div className="flex items-center justify-center space-x-2">
+              <CloudLightning className="h-5 w-5 text-emerald-400" />
+              <span>GCP Cloud Run Serverless</span>
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <footer className="mt-16 flex flex-col gap-3 border-t border-outline-variant/20 pt-8 text-sm text-outline md:flex-row md:items-center md:justify-between">
-          <p className="inline-flex items-center gap-2">
-            <Shield className="h-4 w-4 text-solana-green" />
-            Discovery on Catalog · Build on Studio · Settle with x402/MPP
+      {/* Architecture */}
+      <section>
+        <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-10">
+          <div className="absolute top-0 right-0 flex items-center space-x-2 rounded-bl-2xl border-b border-l border-cyan-500/20 bg-cyan-500/10 p-4 font-mono text-[11px] text-cyan-400">
+            <span className="h-2 w-2 animate-ping rounded-full bg-emerald-400" />
+            <span>SYSTEM ARCHITECTURE DIAGRAM</span>
+          </div>
+          <h2 className="mb-2 text-xl font-bold text-white sm:text-2xl">
+            {t('엔드투엔드 파이프라인 아키텍처', 'End-to-End Pipeline Architecture')}
+          </h2>
+          <p className="mb-8 text-sm text-slate-400">
+            {t(
+              '문서 수집부터 온체인 마이크로 결제 검증, A2A REST API 응답까지 300ms 이내로 처리하는 구조입니다.',
+              'How Enterprise Knowledge, Solana 402 Auth, and A2A REST APIs communicate under 300ms latency.'
+            )}
           </p>
-          <a href={studioUrl} className="font-semibold text-google-blue hover:underline">
-            {studioUrl.replace(/^https?:\/\//, '')} →
-          </a>
-        </footer>
-      </div>
+          <div className="relative grid grid-cols-1 gap-4 md:grid-cols-4">
+            <ArchCard
+              tone="cyan"
+              icon={<HardDrive className="h-5 w-5 text-cyan-400" />}
+              step="Step 1: Ingestion"
+              title="Google Drive & Docs"
+              desc={t(
+                '사내 취업규칙, 법률 계약서, SRE 런북 동기화',
+                'Sync Google Drive, Notion & PDF files in real-time'
+              )}
+              foot="GCP Vertex Vector DB"
+            />
+            <ArchCard
+              tone="indigo"
+              icon={<Lock className="h-5 w-5 text-indigo-400" />}
+              step="Step 2: 402 Auth"
+              title="Solana pay.sh Gateway"
+              desc={t(
+                'HTTP 402 Payment Required 수신 → $0.01 USDC 검증',
+                'HTTP 402 Payment Required & 0.01 USDC xNFT Auth'
+              )}
+              foot="Solana Mainnet-Beta"
+            />
+            <ArchCard
+              tone="purple"
+              icon={<Cloud className="h-5 w-5 text-purple-400" />}
+              step="Step 3: RAG Processing"
+              title="Google Cloud AI Application & KMS"
+              desc={t(
+                'Google Cloud AI Application 기반 Vertex RAG 추론',
+                'Vertex AI RAG inference with enterprise grounding'
+              )}
+              foot="Vertex AI + KMS"
+            />
+            <ArchCard
+              tone="emerald"
+              icon={<Server className="h-5 w-5 text-emerald-400" />}
+              step="Step 4: A2A Delivery"
+              title="REST API Endpoint"
+              desc={t(
+                '에이전트 간 JSON 응답 및 정산 영수증 반환',
+                'Agent-to-Agent JSON response + settlement receipt'
+              )}
+              foot="Cloud Run /pay fetch"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* 3-step workflow */}
+      <section>
+        <div className="mb-10 text-center">
+          <h2 className="text-2xl font-bold text-white sm:text-3xl">
+            {t(
+              '3단계로 끝나는 AI 에이전트 수익화 워크플로우',
+              'Monetize Enterprise Intelligence in 3 Easy Steps'
+            )}
+          </h2>
+          <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-400">
+            {t(
+              '개발자 없이도 구글 드라이브 연결부터 Solana 자동 정산까지 완성합니다.',
+              'From Google Drive sync to automated Solana USDC settlements without writing boilerplate code.'
+            )}
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {[
+            {
+              n: 1,
+              title: t('드라이브 연결', 'Connect Drive'),
+              body: t(
+                'Google Drive / Docs를 연결하면 Vertex Vector DB에 자동 인덱싱됩니다.',
+                'Connect Drive/Docs and auto-index into Vertex Vector DB.'
+              ),
+              code: 'gdrive_sync.init()',
+            },
+            {
+              n: 2,
+              title: t('요금·지갑 설정', 'Set Fee & Wallet'),
+              body: t(
+                '호출당 USDC 요금과 수취 지갑을 지정합니다. pay.sh 402가 자동 적용됩니다.',
+                'Set per-call USDC fee and payout wallet. pay.sh 402 attaches automatically.'
+              ),
+              code: 'fee = 0.01 USDC',
+            },
+            {
+              n: 3,
+              title: t('엔드포인트 배포', 'Deploy Endpoint'),
+              body: t(
+                'A2A REST URL이 발급되고 카탈로그에 게시됩니다. pay fetch로 즉시 호출 가능합니다.',
+                'A2A REST URL is issued and listed on the catalog. Call instantly with pay fetch.'
+              ),
+              code: 'POST /api/v1/invoke',
+            },
+          ].map((s) => (
+            <button
+              key={s.n}
+              type="button"
+              onClick={() => setStep(s.n)}
+              className={`rounded-2xl border p-6 text-left transition-all ${
+                step === s.n
+                  ? 'border-cyan-500/50 bg-slate-900 shadow-lg shadow-cyan-500/10'
+                  : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
+              }`}
+            >
+              <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 text-sm font-bold text-white">
+                {s.n}
+              </div>
+              <h3 className="text-lg font-semibold text-white">{s.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-400">{s.body}</p>
+              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-[11px] text-cyan-300">
+                <span className="text-slate-500">$</span> {s.code}
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Pricing */}
+      <section>
+        <div className="mb-8 text-center">
+          <h2 className="text-2xl font-bold text-white sm:text-3xl">
+            {t('스튜디오 요금제', 'Studio Pricing')}
+          </h2>
+          <p className="mt-2 text-sm text-slate-400">
+            {t('에이전트 생성·배포는 Studio에서. 카탈로그 검색은 무료입니다.', 'Create & deploy in Studio. Catalog discovery is free.')}
+          </p>
+          <div className="mt-6 inline-flex rounded-lg border border-slate-800 bg-slate-900 p-0.5">
+            <button
+              type="button"
+              onClick={() => setBilling('monthly')}
+              className={`rounded-md px-4 py-1.5 text-xs font-semibold ${
+                billing === 'monthly' ? 'bg-slate-800 text-cyan-300' : 'text-slate-400'
+              }`}
+            >
+              Monthly
+            </button>
+            <button
+              type="button"
+              onClick={() => setBilling('yearly')}
+              className={`rounded-md px-4 py-1.5 text-xs font-semibold ${
+                billing === 'yearly' ? 'bg-slate-800 text-cyan-300' : 'text-slate-400'
+              }`}
+            >
+              Yearly
+            </button>
+          </div>
+        </div>
+        <div className="grid gap-5 md:grid-cols-3">
+          <PriceCard
+            name="Starter"
+            price={billing === 'monthly' ? '$0' : '$0'}
+            period={t('/월', '/mo')}
+            features={[
+              t('공개 카탈로그 검색', 'Public catalog browse'),
+              t('pay.sh 402 호출', 'pay.sh 402 invoke'),
+              t('1 에이전트 체험', '1 agent trial'),
+            ]}
+            cta={t('카탈로그 열기', 'Open Catalog')}
+            href="/marketplace"
+            internal
+          />
+          <PriceCard
+            name="Pro"
+            price={billing === 'monthly' ? '$49' : '$470'}
+            period={billing === 'monthly' ? t('/월', '/mo') : t('/년', '/yr')}
+            popular
+            features={[
+              t('무제한 에이전트 배포', 'Unlimited agent deploys'),
+              t('Vertex RAG + Drive 동기화', 'Vertex RAG + Drive sync'),
+              t('카탈로그 자동 게시', 'Auto-list on catalog'),
+              t('USDC 자동 정산', 'USDC auto-settlement'),
+            ]}
+            cta={t('Studio에서 시작', 'Start in Studio')}
+            href={studio}
+          />
+          <PriceCard
+            name="Enterprise"
+            price={t('문의', 'Custom')}
+            period=""
+            features={[
+              t('전용 VPC / KMS', 'Dedicated VPC / KMS'),
+              t('SLA · 감사 로그', 'SLA & audit logs'),
+              t('프라이빗 카탈로그', 'Private catalog'),
+            ]}
+            cta={t('영업 문의', 'Contact Sales')}
+            href={studio}
+          />
+        </div>
+      </section>
+
+      {/* Feature grid */}
+      <section>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {[
+            {
+              icon: <FileText className="h-5 w-5 text-cyan-400" />,
+              title: t('문서 기반 RAG', 'Document RAG'),
+              body: t('사내 PDF·Drive를 Vertex로 인덱싱', 'Index PDFs & Drive into Vertex'),
+            },
+            {
+              icon: <Shield className="h-5 w-5 text-indigo-400" />,
+              title: t('HTTP 402 결제', 'HTTP 402 Payments'),
+              body: t('호출마다 USDC 마이크로결제', 'Per-call USDC micropayments'),
+            },
+            {
+              icon: <Blocks className="h-5 w-5 text-purple-400" />,
+              title: t('공개 카탈로그', 'Public Catalog'),
+              body: t('배포한 에이전트를 마켓에 노출', 'List deployed agents on marketplace'),
+            },
+            {
+              icon: <Zap className="h-5 w-5 text-cyan-400" />,
+              title: t('A2A REST', 'A2A REST'),
+              body: t('에이전트 간 표준 REST 호출', 'Standard agent-to-agent REST'),
+            },
+            {
+              icon: <Wallet className="h-5 w-5 text-indigo-400" />,
+              title: t('온체인 정산', 'On-chain Settlement'),
+              body: t('Solana pay.sh 영수증 검증', 'Solana pay.sh receipt verify'),
+            },
+            {
+              icon: <CloudLightning className="h-5 w-5 text-emerald-400" />,
+              title: t('Cloud Run', 'Cloud Run'),
+              body: t('서버리스 스케일 엔드포인트', 'Serverless scalable endpoints'),
+            },
+          ].map((f) => (
+            <div
+              key={f.title}
+              className="rounded-xl border border-slate-800 bg-slate-900/70 p-5 transition-all hover:border-cyan-500/30"
+            >
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-950">
+                {f.icon}
+              </div>
+              <h3 className="font-semibold text-white">{f.title}</h3>
+              <p className="mt-1 text-sm text-slate-400">{f.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Final CTA */}
+      <section>
+        <div className="relative overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 p-8 text-center sm:p-12">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-cyan-500/10 via-transparent to-purple-500/10" />
+          <h2 className="relative text-2xl font-bold text-white sm:text-3xl">
+            {t('지금 Studio에서 첫 에이전트를 배포하세요', 'Deploy your first agent in Studio now')}
+          </h2>
+          <p className="relative mx-auto mt-3 max-w-xl text-sm text-slate-300">
+            {t(
+              '카탈로그는 검색·발견, Studio는 생성·정산. 같은 SolVamos 스택입니다.',
+              'Catalog for discovery. Studio for create & settle. Same SolVamos stack.'
+            )}
+          </p>
+          <div className="relative mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <a
+              href={studio}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-500/25"
+            >
+              {t('Studio 열기', 'Open Studio')}
+              <ArrowRight className="h-4 w-4" />
+            </a>
+            <Link
+              to="/marketplace"
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-950/80 px-8 py-3.5 text-sm font-semibold text-slate-200"
+            >
+              {t('라이브 서비스', 'Live Services')}
+            </Link>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
 
 function ArchCard({
+  tone,
+  icon,
   step,
   title,
-  subtitle,
-  body,
-  tag,
+  desc,
+  foot,
 }: {
+  tone: 'cyan' | 'indigo' | 'purple' | 'emerald';
+  icon: ReactNode;
   step: string;
   title: string;
-  subtitle: string;
-  body: string;
-  tag: string;
+  desc: string;
+  foot: string;
 }) {
+  const border =
+    tone === 'cyan'
+      ? 'hover:border-cyan-500/40'
+      : tone === 'indigo'
+        ? 'border-indigo-500/30 hover:border-indigo-500/60'
+        : tone === 'purple'
+          ? 'border-purple-500/30 hover:border-purple-500/60'
+          : 'border-emerald-500/30 hover:border-emerald-500/60';
+  const chip =
+    tone === 'cyan'
+      ? 'border-cyan-500/30 bg-cyan-500/10'
+      : tone === 'indigo'
+        ? 'border-indigo-500/30 bg-indigo-500/10'
+        : tone === 'purple'
+          ? 'border-purple-500/30 bg-purple-500/10'
+          : 'border-emerald-500/30 bg-emerald-500/10';
+  const label =
+    tone === 'cyan'
+      ? 'text-cyan-400'
+      : tone === 'indigo'
+        ? 'text-indigo-400'
+        : tone === 'purple'
+          ? 'text-purple-400'
+          : 'text-emerald-400';
+
   return (
-    <div className="rounded-xl border border-white/10 bg-surface-container-lowest/60 p-5">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-outline">
-        {step}: {title}
-      </p>
-      <h4 className="mt-2 text-lg font-semibold">{subtitle}</h4>
-      <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">{body}</p>
-      <p className="mt-4 font-mono text-[11px] text-solana-green">{tag}</p>
+    <div className={`group rounded-xl border border-slate-800 bg-slate-950 p-5 transition-all ${border}`}>
+      <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-lg border ${chip}`}>{icon}</div>
+      <span className={`text-xs font-mono uppercase tracking-wider ${label}`}>{step}</span>
+      <h3 className="mt-1 text-base font-semibold text-white">{title}</h3>
+      <p className="mt-1 text-xs leading-relaxed text-slate-400">{desc}</p>
+      <div className="mt-3 rounded bg-slate-900 p-2 font-mono text-[11px] text-slate-500">{foot}</div>
     </div>
   );
 }
 
-function WorkflowRow({
-  num,
-  label,
-  title,
-  body,
+function PriceCard({
+  name,
+  price,
+  period,
+  features,
+  cta,
+  href,
+  popular,
+  internal,
 }: {
-  num: string;
-  label: string;
-  title: string;
-  body: string;
+  name: string;
+  price: string;
+  period: string;
+  features: string[];
+  cta: string;
+  href: string;
+  popular?: boolean;
+  internal?: boolean;
 }) {
+  const ctaClass = `mt-8 flex w-full items-center justify-center rounded-xl px-4 py-3 text-sm font-bold transition-all ${
+    popular
+      ? 'bg-gradient-to-r from-cyan-500 to-indigo-600 text-white shadow-md shadow-cyan-500/20'
+      : 'border border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-500'
+  }`;
+
   return (
-    <div className="flex gap-4 rounded-xl border border-white/10 bg-surface-container-lowest/40 p-5 md:gap-6">
-      <div className="shrink-0 font-mono text-2xl font-bold text-primary">{num}</div>
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-outline">{label}</p>
-        <h4 className="mt-1 text-lg font-semibold">{title}</h4>
-        <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">{body}</p>
+    <div
+      className={`relative rounded-2xl border p-6 ${
+        popular
+          ? 'border-cyan-500/50 bg-slate-900 shadow-xl shadow-cyan-500/10'
+          : 'border-slate-800 bg-slate-900/70'
+      }`}
+    >
+      {popular ? (
+        <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-3 py-0.5 text-[10px] font-bold tracking-wide text-white uppercase">
+          Most Popular
+        </div>
+      ) : null}
+      <div className="text-sm font-semibold text-slate-300">{name}</div>
+      <div className="mt-3 flex items-baseline gap-1">
+        <span className="text-4xl font-black text-white">{price}</span>
+        {period ? <span className="text-sm text-slate-500">{period}</span> : null}
       </div>
-    </div>
-  );
-}
-
-function Value({
-  icon,
-  title,
-  body,
-}: {
-  icon: ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div>
-      <div className="mb-3 inline-flex rounded-lg bg-surface-container-high p-2.5">{icon}</div>
-      <h4 className="mb-2 text-lg font-semibold">{title}</h4>
-      <p className="text-sm leading-relaxed text-on-surface-variant">{body}</p>
+      <ul className="mt-6 space-y-2.5">
+        {features.map((f) => (
+          <li key={f} className="flex items-start gap-2 text-sm text-slate-300">
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-cyan-400" />
+            {f}
+          </li>
+        ))}
+      </ul>
+      {internal ? (
+        <Link to={href} className={ctaClass}>
+          {cta}
+        </Link>
+      ) : (
+        <a href={href} className={ctaClass}>
+          {cta}
+        </a>
+      )}
     </div>
   );
 }
