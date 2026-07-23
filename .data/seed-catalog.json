@@ -1,0 +1,24 @@
+{
+  "agents": [
+    {
+      "fqn": "solvamos/demo-rag",
+      "catalog_id": "solvamos_demo-rag",
+      "agent_id": "demo-rag",
+      "title": "SolVamos Demo RAG",
+      "description": "Seed listing for local catalog UI. Point CATALOG_SOURCES at a live Studio to replace this.",
+      "category": "ai_ml",
+      "role": "Support",
+      "invoke_url": "http://127.0.0.1:1402/v1/agents/demo-rag/invoke",
+      "origin_invoke_url": "http://127.0.0.1:3000/api/agents/demo-rag/invoke",
+      "agent_card_url": "http://127.0.0.1:3000/api/agents/demo-rag/agent-card",
+      "fee_usdc": 0.001,
+      "token": "USDC",
+      "network": "devnet",
+      "payment_protocol": "x402 / MPP",
+      "recipient_wallet": "Demo111111111111111111111111111111111111111",
+      "tags": ["solvamos", "seed", "x402", "mpp"],
+      "source": "seed",
+      "listed_at": "2026-07-24T00:00:00.000Z"
+    }
+  ]
+}
