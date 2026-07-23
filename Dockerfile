@@ -2,16 +2,19 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm run build \
+  && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+ENV PORT=8080
+COPY package.json ./
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY .data ./.data
-EXPOSE 4173
+EXPOSE 8080
+USER node
 CMD ["node", "dist/server.mjs"]

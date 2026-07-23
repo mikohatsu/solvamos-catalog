@@ -197,23 +197,34 @@ function normalizeStudioEntry(
 }
 
 async function fetchStudioCatalog(sourceBase: string, catalogBase: string): Promise<PublicAgent[]> {
-  const url = `${sourceBase}/api/catalog`;
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (!res.ok) {
-    throw new Error(`${url} → HTTP ${res.status}`);
+  const candidates = [`${sourceBase}/api/catalog`, `${sourceBase}/api/paysh/catalog`];
+  let lastError: Error | null = null;
+
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) {
+        lastError = new Error(`${url} → HTTP ${res.status}`);
+        continue;
+      }
+      const json = (await res.json()) as any;
+      const rows = Array.isArray(json.data)
+        ? json.data
+        : Array.isArray(json.agents)
+          ? json.agents
+          : [];
+      return rows
+        .map((row: any) => normalizeStudioEntry(row, sourceBase, catalogBase))
+        .filter(Boolean) as PublicAgent[];
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
   }
-  const json = (await res.json()) as any;
-  const rows = Array.isArray(json.data)
-    ? json.data
-    : Array.isArray(json.agents)
-      ? json.agents
-      : [];
-  return rows
-    .map((row: any) => normalizeStudioEntry(row, sourceBase, catalogBase))
-    .filter(Boolean) as PublicAgent[];
+
+  throw lastError || new Error(`${sourceBase}: no catalog endpoint`);
 }
 
 function toStudioMirror(agent: PublicAgent): Record<string, unknown> {

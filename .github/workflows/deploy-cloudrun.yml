@@ -1,0 +1,93 @@
+# CI/CD: solvamos-catalog → Cloud Run
+name: Deploy Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: catalog-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: project-64269e62-555d-4979-88e
+  REGION: asia-northeast3
+  AR_REPO: solvamos-img
+  SERVICE: solvamos-catalog
+  IMAGE: catalog
+  STUDIO_URL: https://solvamos-studio-2ggrwml2ba-du.a.run.app
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  deploy:
+    name: Build & Deploy
+    needs: [review]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE}"
+          TAG="${GITHUB_SHA::7}"
+          docker build -t "${IMAGE_URI}:${TAG}" -t "${IMAGE_URI}:latest" .
+          docker push "${IMAGE_URI}:${TAG}"
+          docker push "${IMAGE_URI}:latest"
+          echo "IMAGE_URI=${IMAGE_URI}:${TAG}" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          set -euo pipefail
+          # First deploy may not know final URL; use placeholder then update.
+          gcloud run deploy "${SERVICE}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --image="${IMAGE_URI}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --set-env-vars="NODE_ENV=production,STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
+
+          URL="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
+          gcloud run services update "${SERVICE}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --update-env-vars="PUBLIC_BASE_URL=${URL},STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
+
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Service: \`${SERVICE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${IMAGE_URI}\`" >> "$GITHUB_STEP_SUMMARY"
