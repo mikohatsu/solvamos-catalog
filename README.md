@@ -1,43 +1,38 @@
 # SolVamos Catalog
 
-Public **landing + marketplace directory** for SolVamos agents, with machine-readable discovery like [`pay.sh/api/catalog`](https://pay.sh/api/catalog).
+Public **landing + marketplace** for SolVamos agents. This service is the **source of truth** for discovery listings.
 
 | Surface | URL |
 |---------|-----|
 | Landing | `/` |
-| Marketplace directory | `/marketplace` |
-| Agent HTML page | `/a/:agentId` |
-| Full catalog JSON | `/api/catalog` |
-| Agent JSON (scrape) | `/api/solvamos/:agentId` |
-| Agent Markdown | `/api/solvamos/:agentId/index.md` |
+| Marketplace | `/marketplace` |
+| Agent page | `/a/:agentId` |
+| Catalog JSON | `/api/catalog` |
+| Upsert (Studio) | `POST /api/catalog/agents` |
+| Bulk hydrate | `POST /api/catalog/agents/bulk` |
+| Unlist | `POST /api/catalog/agents/:id/unlist` |
 
-When Studio lists an agent, this site exposes:
+## Architecture
 
-1. a marketplace card  
-2. a dedicated public page (`page_url`)  
-3. scrape-ready JSON (`api_url`) + markdown (`markdown_url`)  
-4. invoke URL(s) settled with **x402 / MPP** via `pay fetch`
-
-## External site pattern
-
-```js
-const catalog = await fetch('https://catalog.example.com/api/catalog').then(r => r.json());
-for (const agent of catalog.agents) {
-  // render marketplace row
-  // or deep-link to agent.page_url
-  // or fetch agent.api_url for a custom landing
-}
+```
+Studio (create/update agent)
+   │  POST /api/catalog/agents  (+ X-Catalog-Admin-Secret)
+   ▼
+solvamos-catalog store  ←── source of truth
+   │  GET /api/catalog
+   ▼
+Marketplace / external sites / Studio UI (read)
 ```
 
-Per-agent (pay.sh-style):
+Studio no longer owns the public catalog file. It **publishes** here and **reads** listings back.
 
-```text
-GET /api/solvamos/demo-rag
-GET /api/solvamos/demo-rag/index.md
-GET /a/demo-rag
+## Auth for writes
+
+```env
+CATALOG_ADMIN_SECRET=shared-secret
 ```
 
-Each listing typically has **one commercial invoke endpoint** (GET+POST same path).
+Studio must set the same value as `CATALOG_ADMIN_SECRET`. Header: `X-Catalog-Admin-Secret`.
 
 ## Quick start
 
@@ -47,20 +42,24 @@ npm install
 npm run dev
 ```
 
+## Production (Cloud Run)
+
+| Item | Value |
+|------|-------|
+| URL | https://solvamos-catalog-2ggrwml2ba-du.a.run.app |
+| Store | `/tmp/solvamos-catalog-store.json` (ephemeral — Studio rehydrates on boot) |
+
+Set on Cloud Run:
+
 ```env
-CATALOG_SOURCES=http://127.0.0.1:3000
-STUDIO_URL=http://localhost:3000
-PUBLIC_BASE_URL=http://localhost:4173
+PUBLIC_BASE_URL=https://solvamos-catalog-2ggrwml2ba-du.a.run.app
+STUDIO_URL=https://solvamos-studio-2ggrwml2ba-du.a.run.app
+CATALOG_ADMIN_SECRET=<shared>
 ```
 
-## Cloud Run note (Studio)
+Studio:
 
-SolVamos Studio provisions Cloud Run **per tenant** (`sv-{tenant}`), not per agent.  
-Many agents share that tenant runtime; each agent still gets its own vault, catalog entry, and public page URLs above.
-
-## Production
-
-```bash
-npm run build
-NODE_ENV=production npm start
+```env
+CATALOG_SITE_URL=https://solvamos-catalog-2ggrwml2ba-du.a.run.app
+CATALOG_ADMIN_SECRET=<same>
 ```

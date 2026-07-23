@@ -7,6 +7,10 @@ import {
   buildPublicCatalog,
   findAgent,
   getCachedCatalog,
+  initCatalogStore,
+  normalizeStudioPayload,
+  unlistAgent,
+  upsertAgent,
   type CatalogConfig,
 } from './server/catalog.js';
 
@@ -20,22 +24,58 @@ const config: CatalogConfig = {
     ''
   ),
   studioUrl: (process.env.STUDIO_URL || 'http://localhost:3000').replace(/\/$/, ''),
-  sources: String(process.env.CATALOG_SOURCES || 'http://127.0.0.1:3000')
+  adminSecret: process.env.CATALOG_ADMIN_SECRET || '',
+  storePath:
+    process.env.CATALOG_STORE_PATH ||
+    (isProd
+      ? path.join('/tmp', 'solvamos-catalog-store.json')
+      : path.join(rootDir, '.data', 'catalog-store.json')),
+  importSources: String(process.env.CATALOG_SOURCES || '')
     .split(',')
     .map((s) => s.trim().replace(/\/$/, ''))
     .filter(Boolean),
-  cacheTtlSec: Number(process.env.CATALOG_CACHE_TTL_SEC || 30),
 };
+
+initCatalogStore(config);
+
+function assertAdmin(req: express.Request, res: express.Response): boolean {
+  if (!config.adminSecret) {
+    // Dev convenience: allow writes when secret unset (local only)
+    if (!isProd) return true;
+    res.status(503).json({
+      status: 'error',
+      message: 'CATALOG_ADMIN_SECRET is not configured on catalog service',
+    });
+    return false;
+  }
+  const provided =
+    (req.headers['x-catalog-admin-secret'] as string) ||
+    (req.headers['x-solvamos-catalog-secret'] as string) ||
+    '';
+  if (provided !== config.adminSecret) {
+    res.status(401).json({ status: 'error', message: 'Unauthorized catalog write' });
+    return false;
+  }
+  return true;
+}
 
 async function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  app.use(express.json({ limit: '2mb' }));
 
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
-    res.setHeader('Cache-Control', 'public, max-age=15');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Accept, X-Catalog-Admin-Secret, X-Solvamos-Catalog-Secret'
+    );
+    if (req.method === 'GET') {
+      res.setHeader('Cache-Control', 'public, max-age=10');
+    } else {
+      res.setHeader('Cache-Control', 'no-store');
+    }
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -44,87 +84,126 @@ async function createApp() {
   });
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'solvamos-catalog', version: '0.2.0' });
+    const catalog = getCachedCatalog();
+    res.json({
+      status: 'ok',
+      service: 'solvamos-catalog',
+      version: '0.3.0',
+      store: 'solvamos-catalog',
+      agent_count: catalog.agent_count,
+    });
   });
 
-  /** Full marketplace catalog — scrape this for external landing/marketplace sites */
-  app.get('/api/catalog', async (_req, res) => {
-    try {
-      const catalog = await getCachedCatalog(config);
-      res.json(catalog);
-    } catch (err: any) {
-      res.status(502).json({
-        status: 'error',
-        message: err?.message || 'Failed to build catalog',
-      });
-    }
+  /** Public catalog — source of truth on this service */
+  app.get('/api/catalog', (req, res) => {
+    const tenantId = typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined;
+    const studioOrigin =
+      typeof req.query.studioOrigin === 'string' ? req.query.studioOrigin : undefined;
+    res.json(buildPublicCatalog({ tenantId, studioOrigin }));
   });
 
-  /** Single agent JSON (alias) */
-  app.get('/api/catalog/:agentId', async (req, res) => {
+  /** Studio → catalog upsert (source of truth write path) */
+  app.post('/api/catalog/agents', (req, res) => {
+    if (!assertAdmin(req, res)) return;
     try {
-      const catalog = await getCachedCatalog(config);
-      const agent = findAgent(catalog, req.params.agentId);
-      if (!agent) {
-        res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
-        return;
-      }
-      res.json({ status: 'success', agent });
-    } catch (err: any) {
-      res.status(502).json({ status: 'error', message: err?.message || 'Lookup failed' });
-    }
-  });
-
-  /**
-   * pay.sh-style provider card:
-   *   /api/solvamos/:agentId
-   *   /api/solvamos/:agentId/index.md
-   */
-  app.get('/api/solvamos/:agentId/index.md', async (req, res) => {
-    try {
-      const catalog = await getCachedCatalog(config);
-      const agent = findAgent(catalog, req.params.agentId);
-      if (!agent) {
-        res.status(404).type('text/plain').send('Agent not found');
-        return;
-      }
-      res.type('text/markdown; charset=utf-8').send(agentToMarkdown(agent));
-    } catch (err: any) {
-      res.status(502).type('text/plain').send(err?.message || 'Lookup failed');
-    }
-  });
-
-  app.get('/api/solvamos/:agentId', async (req, res) => {
-    try {
-      const catalog = await getCachedCatalog(config);
-      const agent = findAgent(catalog, req.params.agentId);
-      if (!agent) {
-        res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
-        return;
-      }
+      const body = (req.body || {}) as Record<string, unknown>;
+      const studioOrigin =
+        typeof body.studio_origin === 'string'
+          ? body.studio_origin
+          : typeof body.studioOrigin === 'string'
+            ? body.studioOrigin
+            : undefined;
+      const payload = body.agent || body.listing || body;
+      const normalized = normalizeStudioPayload(
+        payload as Record<string, unknown>,
+        studioOrigin
+      );
+      const agent = upsertAgent(normalized);
       res.json({
         status: 'success',
-        version: catalog.version,
-        generated_at: catalog.generated_at,
-        protocol: catalog.protocol,
         agent,
+        data: buildPublicCatalog().data.find((d) => d.agentId === agent.agent_id),
       });
     } catch (err: any) {
-      res.status(502).json({ status: 'error', message: err?.message || 'Lookup failed' });
+      res.status(400).json({ status: 'error', message: err?.message || 'Upsert failed' });
     }
   });
 
-  app.post('/api/catalog/refresh', async (_req, res) => {
+  /** Bulk upsert (Studio hydrate on boot) */
+  app.post('/api/catalog/agents/bulk', (req, res) => {
+    if (!assertAdmin(req, res)) return;
     try {
-      const catalog = await buildPublicCatalog(config, { force: true });
+      const body = (req.body || {}) as {
+        agents?: unknown[];
+        studioOrigin?: string;
+        studio_origin?: string;
+      };
+      const rows = Array.isArray(body.agents) ? body.agents : [];
+      const studioOrigin = body.studio_origin || body.studioOrigin;
+      const agents = rows.map((row) =>
+        upsertAgent(normalizeStudioPayload(row as Record<string, unknown>, studioOrigin))
+      );
       res.json({
         status: 'success',
-        agent_count: catalog.agent_count,
-        generated_at: catalog.generated_at,
+        upserted: agents.length,
+        agent_ids: agents.map((a) => a.agent_id),
       });
     } catch (err: any) {
-      res.status(502).json({ status: 'error', message: err?.message || 'Refresh failed' });
+      res.status(400).json({ status: 'error', message: err?.message || 'Bulk upsert failed' });
     }
+  });
+
+  app.delete('/api/catalog/agents/:agentId', (req, res) => {
+    if (!assertAdmin(req, res)) return;
+    const agent = unlistAgent(req.params.agentId);
+    if (!agent) {
+      res.status(404).json({ status: 'error', message: 'Agent not found' });
+      return;
+    }
+    res.json({ status: 'success', agent });
+  });
+
+  app.post('/api/catalog/agents/:agentId/unlist', (req, res) => {
+    if (!assertAdmin(req, res)) return;
+    const agent = unlistAgent(req.params.agentId);
+    if (!agent) {
+      res.status(404).json({ status: 'error', message: 'Agent not found' });
+      return;
+    }
+    res.json({ status: 'success', agent });
+  });
+
+  app.get('/api/catalog/:agentId', (req, res) => {
+    const agent = findAgent(req.params.agentId);
+    if (!agent) {
+      res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
+      return;
+    }
+    res.json({ status: 'success', agent });
+  });
+  app.get('/api/solvamos/:agentId/index.md', (req, res) => {
+    const agent = findAgent(req.params.agentId);
+    if (!agent) {
+      res.status(404).type('text/plain').send('Agent not found');
+      return;
+    }
+    res.type('text/markdown; charset=utf-8').send(agentToMarkdown(agent));
+  });
+
+  app.get('/api/solvamos/:agentId', (req, res) => {
+    const agent = findAgent(req.params.agentId);
+    if (!agent) {
+      res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
+      return;
+    }
+    const catalog = getCachedCatalog();
+    res.json({
+      status: 'success',
+      version: catalog.version,
+      generated_at: catalog.generated_at,
+      protocol: catalog.protocol,
+      agent,
+    });
   });
 
   const clientDir = path.join(rootDir, 'dist', 'client');
@@ -168,7 +247,10 @@ async function main() {
     console.log(`[solvamos-catalog] landing     ${config.publicBaseUrl}/`);
     console.log(`[solvamos-catalog] marketplace ${config.publicBaseUrl}/marketplace`);
     console.log(`[solvamos-catalog] API         ${config.publicBaseUrl}/api/catalog`);
-    console.log(`[solvamos-catalog] sources=${config.sources.join(', ') || '(none)'}`);
+    console.log(`[solvamos-catalog] store       ${config.storePath}`);
+    console.log(
+      `[solvamos-catalog] admin       ${config.adminSecret ? 'CATALOG_ADMIN_SECRET set' : 'open (dev) / required in prod'}`
+    );
   });
 }
 

@@ -76,8 +76,8 @@ export default function MarketplacePage() {
           </p>
           <h1 className="text-3xl font-bold md:text-4xl">Agent directory</h1>
           <p className="mt-2 max-w-2xl text-on-surface-variant">
-            Studio에 게시된 에이전트입니다. 각 카드는 전용 웹페이지·JSON·invoke 엔드포인트를
-            가집니다. 외부 사이트는 아래 카탈로그 API를 긁어 표시하면 됩니다.
+            Studio가 게시한 에이전트입니다. 카탈로그 저장소(이 서비스)가 원본이며, 외부 사이트는
+            `/api/catalog`를 긁어 표시하면 됩니다.
           </p>
         </header>
 
