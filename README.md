@@ -1,14 +1,43 @@
 # SolVamos Catalog
 
-Public discovery site + machine-readable API for SolVamos agents — analogous to [`https://pay.sh/api/catalog`](https://pay.sh/api/catalog).
+Public **landing + marketplace directory** for SolVamos agents, with machine-readable discovery like [`pay.sh/api/catalog`](https://pay.sh/api/catalog).
 
 | Surface | URL |
 |---------|-----|
-| Site | `/` |
-| JSON API | `/api/catalog` |
-| Agent lookup | `/api/catalog/:agentId` |
+| Landing | `/` |
+| Marketplace directory | `/marketplace` |
+| Agent HTML page | `/a/:agentId` |
+| Full catalog JSON | `/api/catalog` |
+| Agent JSON (scrape) | `/api/solvamos/:agentId` |
+| Agent Markdown | `/api/solvamos/:agentId/index.md` |
 
-Paid invoke URLs settle via **x402 / MPP** (`pay fetch`). Discovery is SolVamos-owned; payment rails stay pay.sh-compatible.
+When Studio lists an agent, this site exposes:
+
+1. a marketplace card  
+2. a dedicated public page (`page_url`)  
+3. scrape-ready JSON (`api_url`) + markdown (`markdown_url`)  
+4. invoke URL(s) settled with **x402 / MPP** via `pay fetch`
+
+## External site pattern
+
+```js
+const catalog = await fetch('https://catalog.example.com/api/catalog').then(r => r.json());
+for (const agent of catalog.agents) {
+  // render marketplace row
+  // or deep-link to agent.page_url
+  // or fetch agent.api_url for a custom landing
+}
+```
+
+Per-agent (pay.sh-style):
+
+```text
+GET /api/solvamos/demo-rag
+GET /api/solvamos/demo-rag/index.md
+GET /a/demo-rag
+```
+
+Each listing typically has **one commercial invoke endpoint** (GET+POST same path).
 
 ## Quick start
 
@@ -18,41 +47,16 @@ npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:4173 and http://127.0.0.1:4173/api/catalog
-
-Point `CATALOG_SOURCES` at one or more SolVamos Studio origins (their `/api/catalog`).
-
 ```env
 CATALOG_SOURCES=http://127.0.0.1:3000
 STUDIO_URL=http://localhost:3000
 PUBLIC_BASE_URL=http://localhost:4173
 ```
 
-If every source is unreachable, the seed listing in `.data/seed-catalog.json` is shown.
+## Cloud Run note (Studio)
 
-## API shape (v1)
-
-```json
-{
-  "version": 1,
-  "status": "success",
-  "catalog": "solvamos",
-  "protocol": "x402 / MPP",
-  "agent_count": 1,
-  "agents": [
-    {
-      "fqn": "solvamos/<agentId>",
-      "title": "...",
-      "invoke_url": "https://gateway/.../invoke",
-      "fee_usdc": 0.001,
-      "payment_protocol": "x402 / MPP"
-    }
-  ],
-  "data": []
-}
-```
-
-`data` mirrors the Studio listing format for existing clients.
+SolVamos Studio provisions Cloud Run **per tenant** (`sv-{tenant}`), not per agent.  
+Many agents share that tenant runtime; each agent still gets its own vault, catalog entry, and public page URLs above.
 
 ## Production
 
@@ -60,16 +64,3 @@ If every source is unreachable, the seed listing in `.data/seed-catalog.json` is
 npm run build
 NODE_ENV=production npm start
 ```
-
-Serve behind HTTPS and set `PUBLIC_BASE_URL` / `CATALOG_SOURCES` to your Studio Cloud Run URL(s).
-
-## Studio wiring
-
-In `solvamos-studio`:
-
-```env
-CATALOG_SITE_URL=https://catalog.example.com
-CATALOG_CORS_ORIGINS=*
-```
-
-Studio then advertises the catalog site in status + listing `catalogPageUrl` / `catalogApiUrl`.

@@ -3,7 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import express from 'express';
 import {
+  agentToMarkdown,
   buildPublicCatalog,
+  findAgent,
   getCachedCatalog,
   type CatalogConfig,
 } from './server/catalog.js';
@@ -42,10 +44,10 @@ async function createApp() {
   });
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'solvamos-catalog', version: '0.1.0' });
+    res.json({ status: 'ok', service: 'solvamos-catalog', version: '0.2.0' });
   });
 
-  /** Public machine-readable catalog — analogous to https://pay.sh/api/catalog */
+  /** Full marketplace catalog — scrape this for external landing/marketplace sites */
   app.get('/api/catalog', async (_req, res) => {
     try {
       const catalog = await getCachedCatalog(config);
@@ -58,18 +60,55 @@ async function createApp() {
     }
   });
 
+  /** Single agent JSON (alias) */
   app.get('/api/catalog/:agentId', async (req, res) => {
     try {
       const catalog = await getCachedCatalog(config);
-      const agent =
-        catalog.agents.find(
-          (a) => a.agent_id === req.params.agentId || a.catalog_id === req.params.agentId
-        ) || null;
+      const agent = findAgent(catalog, req.params.agentId);
       if (!agent) {
         res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
         return;
       }
       res.json({ status: 'success', agent });
+    } catch (err: any) {
+      res.status(502).json({ status: 'error', message: err?.message || 'Lookup failed' });
+    }
+  });
+
+  /**
+   * pay.sh-style provider card:
+   *   /api/solvamos/:agentId
+   *   /api/solvamos/:agentId/index.md
+   */
+  app.get('/api/solvamos/:agentId/index.md', async (req, res) => {
+    try {
+      const catalog = await getCachedCatalog(config);
+      const agent = findAgent(catalog, req.params.agentId);
+      if (!agent) {
+        res.status(404).type('text/plain').send('Agent not found');
+        return;
+      }
+      res.type('text/markdown; charset=utf-8').send(agentToMarkdown(agent));
+    } catch (err: any) {
+      res.status(502).type('text/plain').send(err?.message || 'Lookup failed');
+    }
+  });
+
+  app.get('/api/solvamos/:agentId', async (req, res) => {
+    try {
+      const catalog = await getCachedCatalog(config);
+      const agent = findAgent(catalog, req.params.agentId);
+      if (!agent) {
+        res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
+        return;
+      }
+      res.json({
+        status: 'success',
+        version: catalog.version,
+        generated_at: catalog.generated_at,
+        protocol: catalog.protocol,
+        agent,
+      });
     } catch (err: any) {
       res.status(502).json({ status: 'error', message: err?.message || 'Lookup failed' });
     }
@@ -126,7 +165,9 @@ async function main() {
   const app = await createApp();
   app.listen(config.port, () => {
     console.log(`[solvamos-catalog] http://127.0.0.1:${config.port}`);
-    console.log(`[solvamos-catalog] API  ${config.publicBaseUrl}/api/catalog`);
+    console.log(`[solvamos-catalog] landing     ${config.publicBaseUrl}/`);
+    console.log(`[solvamos-catalog] marketplace ${config.publicBaseUrl}/marketplace`);
+    console.log(`[solvamos-catalog] API         ${config.publicBaseUrl}/api/catalog`);
     console.log(`[solvamos-catalog] sources=${config.sources.join(', ') || '(none)'}`);
   });
 }

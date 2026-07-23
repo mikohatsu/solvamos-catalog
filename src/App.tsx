@@ -1,5 +1,18 @@
-import CatalogHome from './pages/CatalogHome';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import LandingPage from './pages/LandingPage';
+import MarketplacePage from './pages/MarketplacePage';
+import AgentDetailPage from './pages/AgentDetailPage';
 
 export default function App() {
-  return <CatalogHome />;
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/marketplace" element={<MarketplacePage />} />
+        <Route path="/a/:agentId" element={<AgentDetailPage />} />
+        <Route path="/catalog" element={<Navigate to="/marketplace" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }

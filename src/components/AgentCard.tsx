@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
-import { Bot } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Bot, ExternalLink } from 'lucide-react';
 import type { PublicAgent } from '../types';
 import CopyButton from './CopyButton';
 
@@ -31,7 +32,12 @@ export default function AgentCard({
             <Bot className="h-6 w-6 text-primary" />
           </div>
           <div className="min-w-0">
-            <h3 className="truncate text-xl font-semibold">{agent.title}</h3>
+            <Link
+              to={`/a/${encodeURIComponent(agent.agent_id)}`}
+              className="block truncate text-xl font-semibold hover:text-primary"
+            >
+              {agent.title}
+            </Link>
             <p className="mt-1 font-mono text-[11px] text-outline">{agent.fqn}</p>
             <p className="mt-1 text-xs text-on-surface-variant">
               {agent.role || agent.category}
@@ -61,14 +67,18 @@ export default function AgentCard({
         copied={copied === `invoke-${agent.agent_id}`}
         onCopy={() => onCopy(agent.invoke_url, `invoke-${agent.agent_id}`)}
       />
-      {agent.agent_card_url && (
-        <EndpointRow
-          label="Agent Card"
-          value={agent.agent_card_url}
-          copied={copied === `card-${agent.agent_id}`}
-          onCopy={() => onCopy(agent.agent_card_url!, `card-${agent.agent_id}`)}
-        />
-      )}
+      <EndpointRow
+        label="Public page"
+        value={agent.page_url}
+        copied={copied === `page-${agent.agent_id}`}
+        onCopy={() => onCopy(agent.page_url, `page-${agent.agent_id}`)}
+      />
+      <EndpointRow
+        label="JSON (scrape)"
+        value={agent.api_url}
+        copied={copied === `api-${agent.agent_id}`}
+        onCopy={() => onCopy(agent.api_url, `api-${agent.agent_id}`)}
+      />
 
       <div className="mt-4 rounded-lg border border-outline-variant/20 bg-surface-container-lowest p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -85,6 +95,13 @@ export default function AgentCard({
           {callExample}
         </code>
       </div>
+
+      <Link
+        to={`/a/${encodeURIComponent(agent.agent_id)}`}
+        className="mt-4 inline-flex items-center gap-1.5 text-sm font-semibold text-google-blue hover:underline"
+      >
+        상세 페이지 <ExternalLink className="h-3.5 w-3.5" />
+      </Link>
     </motion.article>
   );
 }

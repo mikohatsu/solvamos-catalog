@@ -6,6 +6,7 @@
       "agent_id": "demo-rag",
       "title": "SolVamos Demo RAG",
       "description": "Seed listing for local catalog UI. Point CATALOG_SOURCES at a live Studio to replace this.",
+      "use_case": "Ask grounded questions against a demo corpus; settle with Devnet USDC via pay fetch.",
       "category": "ai_ml",
       "role": "Support",
       "invoke_url": "http://127.0.0.1:1402/v1/agents/demo-rag/invoke",
