@@ -63,7 +63,7 @@ export default function MarketplacePage() {
     });
   }, [catalog, query, filter]);
 
-  const studioUrl = catalog?.studio_url || 'http://localhost:3000';
+  const studioUrl = catalog?.studio_url || 'https://solvamos.ai.studio';
 
   return (
     <div className="mesh min-h-screen text-on-surface">
@@ -177,10 +177,18 @@ export default function MarketplacePage() {
         )}
 
         <footer className="mt-16 border-t border-outline-variant/20 pt-8 text-sm text-outline">
-          <p className="inline-flex items-center gap-2">
-            <Wallet className="h-4 w-4 text-solana-green" />
-            Payments settle with Solana USDC via x402 / MPP.
-          </p>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <p className="inline-flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-solana-green" />
+              Payments settle with Solana USDC via x402 / MPP.
+            </p>
+            <a
+              href={studioUrl}
+              className="inline-flex items-center gap-1 font-semibold text-google-blue hover:underline"
+            >
+              Studio 플랫폼으로 이동 →
+            </a>
+          </div>
         </footer>
       </div>
     </div>

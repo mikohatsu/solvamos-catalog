@@ -23,7 +23,7 @@ const config: CatalogConfig = {
     /\/$/,
     ''
   ),
-  studioUrl: (process.env.STUDIO_URL || 'http://localhost:3000').replace(/\/$/, ''),
+  studioUrl: (process.env.STUDIO_URL || 'https://solvamos.ai.studio').replace(/\/$/, ''),
   adminSecret: process.env.CATALOG_ADMIN_SECRET || '',
   storePath:
     process.env.CATALOG_STORE_PATH ||

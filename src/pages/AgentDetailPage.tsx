@@ -9,7 +9,7 @@ import CopyButton from '../components/CopyButton';
 export default function AgentDetailPage() {
   const { agentId = '' } = useParams();
   const [agent, setAgent] = useState<PublicAgent | null>(null);
-  const [studioUrl, setStudioUrl] = useState('http://localhost:3000');
+  const [studioUrl, setStudioUrl] = useState('https://solvamos.ai.studio');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -212,6 +212,12 @@ export default function AgentDetailPage() {
                 className="inline-flex items-center gap-2 rounded-lg bg-surface-container-high px-4 py-2 text-sm"
               >
                 Markdown 열기 <ExternalLink className="h-4 w-4" />
+              </a>
+              <a
+                href={studioUrl}
+                className="inline-flex items-center gap-2 rounded-lg bg-google-blue px-4 py-2 text-sm font-semibold text-white"
+              >
+                Studio 플랫폼
               </a>
             </div>
           </motion.div>
