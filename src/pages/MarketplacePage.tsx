@@ -65,7 +65,7 @@ export default function MarketplacePage() {
     const fromAgents = new Set(
       (catalog?.agents || [])
         .map((a) => a.category || a.role || '')
-        .filter(Boolean)
+        .filter((c): c is string => c.length > 0)
     );
     const merged: string[] = [...DEFAULT_CATEGORIES];
     for (const c of fromAgents) {

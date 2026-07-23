@@ -24,6 +24,8 @@ env:
   IMAGE_NAME: catalog
   STUDIO_URL: https://solvamos-studio-74094114833.asia-northeast3.run.app
   NODE_VERSION: '22'
+  # prisma generate only — not used to connect in CI review/build
+  DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
 
 jobs:
   review:
@@ -37,9 +39,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
+      - name: Install
+        run: npm ci --include=dev
+        env:
+          NODE_ENV: development
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
       - name: Typecheck
         run: npm run lint
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          NODE_ENV: development
       - name: Guard committed secrets
         run: |
           set -euo pipefail
@@ -63,8 +75,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
-      - run: npm run build
+      - name: Install
+        run: npm ci --include=dev
+        env:
+          NODE_ENV: development
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+      - name: Production build
+        run: npm run build
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          NODE_ENV: production
       - name: Assert artifacts
         run: |
           set -euo pipefail
@@ -204,16 +227,16 @@ jobs:
             --cpu=1 \
             --min-instances=0 \
             --max-instances=3 \
+            --add-cloudsql-instances="${PROJECT_ID}:${REGION}:solvamos-studio-pg" \
             --update-env-vars="NODE_ENV=production,STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
 
-      - name: Bind PUBLIC_BASE_URL + optional admin secret
+      - name: Bind PUBLIC_BASE_URL + secrets
         env:
           PROJECT_NUMBER_VAR: ${{ vars.GCP_PROJECT_NUMBER }}
         run: |
           set -euo pipefail
           PROJECT_NUMBER="${PROJECT_NUMBER_VAR:-74094114833}"
           URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
-          # Prefer live describe URL when available
           LIVE="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)' 2>/dev/null || true)"
           if [ -n "${LIVE}" ]; then
             URL="${LIVE}"
@@ -224,15 +247,23 @@ jobs:
             --region="${REGION}" \
             --update-env-vars="PUBLIC_BASE_URL=${URL},STUDIO_URL=${STUDIO_URL},CATALOG_SOURCES=${STUDIO_URL}"
 
-          # catalog-admin-secret must exist in Secret Manager (create once outside CI)
+          SECRET_FLAGS=()
           if gcloud secrets describe catalog-admin-secret --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            SECRET_FLAGS+=("CATALOG_ADMIN_SECRET=catalog-admin-secret:latest")
+          else
+            echo "::warning::Secret Manager 'catalog-admin-secret' missing"
+          fi
+          if gcloud secrets describe database-url --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            SECRET_FLAGS+=("DATABASE_URL=database-url:latest")
+          else
+            echo "::warning::Secret Manager 'database-url' missing — catalog will fall back to ephemeral file store"
+          fi
+          if [ ${#SECRET_FLAGS[@]} -gt 0 ]; then
             gcloud run services update "${SERVICE}" \
               --project="${PROJECT_ID}" \
               --region="${REGION}" \
-              --update-secrets="CATALOG_ADMIN_SECRET=catalog-admin-secret:latest"
-            echo "Bound CATALOG_ADMIN_SECRET from Secret Manager"
-          else
-            echo "::warning::Secret Manager 'catalog-admin-secret' missing — create it, then re-run deploy. Studio publish will fail without it."
+              --update-secrets="$(IFS=,; echo "${SECRET_FLAGS[*]}")"
+            echo "Bound secrets: ${SECRET_FLAGS[*]}"
           fi
 
           {
@@ -241,4 +272,5 @@ jobs:
             echo "- URL: ${URL}"
             echo "- Image: \`${IMAGE_URI}\`"
             echo "- Studio: ${STUDIO_URL}"
+            echo "- DB: CatalogAgent via shared Cloud SQL"
           } >> "$GITHUB_STEP_SUMMARY"
