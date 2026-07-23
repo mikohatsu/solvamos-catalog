@@ -67,9 +67,9 @@ export default function MarketplacePage() {
         .map((a) => a.category || a.role || '')
         .filter(Boolean)
     );
-    const merged = [...DEFAULT_CATEGORIES];
+    const merged: string[] = [...DEFAULT_CATEGORIES];
     for (const c of fromAgents) {
-      if (!merged.includes(c as (typeof DEFAULT_CATEGORIES)[number]) && c !== 'All') {
+      if (!merged.includes(c) && c !== 'All') {
         merged.push(c);
       }
     }
