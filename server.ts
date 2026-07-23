@@ -36,8 +36,6 @@ const config: CatalogConfig = {
     .filter(Boolean),
 };
 
-initCatalogStore(config);
-
 function assertAdmin(req: express.Request, res: express.Response): boolean {
   if (!config.adminSecret) {
     // Dev convenience: allow writes when secret unset (local only)
@@ -83,27 +81,27 @@ async function createApp() {
     next();
   });
 
-  app.get('/health', (_req, res) => {
-    const catalog = getCachedCatalog();
+  app.get('/health', async (_req, res) => {
+    const catalog = await getCachedCatalog();
     res.json({
       status: 'ok',
       service: 'solvamos-catalog',
-      version: '0.3.0',
-      store: 'solvamos-catalog',
+      version: '0.4.0',
+      store: process.env.DATABASE_URL ? 'CatalogAgent(postgres)' : 'file',
       agent_count: catalog.agent_count,
     });
   });
 
   /** Public catalog — source of truth on this service */
-  app.get('/api/catalog', (req, res) => {
+  app.get('/api/catalog', async (req, res) => {
     const tenantId = typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined;
     const studioOrigin =
       typeof req.query.studioOrigin === 'string' ? req.query.studioOrigin : undefined;
-    res.json(buildPublicCatalog({ tenantId, studioOrigin }));
+    res.json(await buildPublicCatalog({ tenantId, studioOrigin }));
   });
 
   /** Studio → catalog upsert (source of truth write path) */
-  app.post('/api/catalog/agents', (req, res) => {
+  app.post('/api/catalog/agents', async (req, res) => {
     if (!assertAdmin(req, res)) return;
     try {
       const body = (req.body || {}) as Record<string, unknown>;
@@ -118,11 +116,12 @@ async function createApp() {
         payload as Record<string, unknown>,
         studioOrigin
       );
-      const agent = upsertAgent(normalized);
+      const agent = await upsertAgent(normalized);
+      const catalog = await buildPublicCatalog();
       res.json({
         status: 'success',
         agent,
-        data: buildPublicCatalog().data.find((d) => d.agentId === agent.agent_id),
+        data: catalog.data.find((d) => d.agentId === agent.agent_id),
       });
     } catch (err: any) {
       res.status(400).json({ status: 'error', message: err?.message || 'Upsert failed' });
@@ -130,7 +129,7 @@ async function createApp() {
   });
 
   /** Bulk upsert (Studio hydrate on boot) */
-  app.post('/api/catalog/agents/bulk', (req, res) => {
+  app.post('/api/catalog/agents/bulk', async (req, res) => {
     if (!assertAdmin(req, res)) return;
     try {
       const body = (req.body || {}) as {
@@ -140,9 +139,12 @@ async function createApp() {
       };
       const rows = Array.isArray(body.agents) ? body.agents : [];
       const studioOrigin = body.studio_origin || body.studioOrigin;
-      const agents = rows.map((row) =>
-        upsertAgent(normalizeStudioPayload(row as Record<string, unknown>, studioOrigin))
-      );
+      const agents = [];
+      for (const row of rows) {
+        agents.push(
+          await upsertAgent(normalizeStudioPayload(row as Record<string, unknown>, studioOrigin))
+        );
+      }
       res.json({
         status: 'success',
         upserted: agents.length,
@@ -153,9 +155,9 @@ async function createApp() {
     }
   });
 
-  app.delete('/api/catalog/agents/:agentId', (req, res) => {
+  app.delete('/api/catalog/agents/:agentId', async (req, res) => {
     if (!assertAdmin(req, res)) return;
-    const agent = unlistAgent(req.params.agentId);
+    const agent = await unlistAgent(req.params.agentId);
     if (!agent) {
       res.status(404).json({ status: 'error', message: 'Agent not found' });
       return;
@@ -163,9 +165,9 @@ async function createApp() {
     res.json({ status: 'success', agent });
   });
 
-  app.post('/api/catalog/agents/:agentId/unlist', (req, res) => {
+  app.post('/api/catalog/agents/:agentId/unlist', async (req, res) => {
     if (!assertAdmin(req, res)) return;
-    const agent = unlistAgent(req.params.agentId);
+    const agent = await unlistAgent(req.params.agentId);
     if (!agent) {
       res.status(404).json({ status: 'error', message: 'Agent not found' });
       return;
@@ -173,16 +175,16 @@ async function createApp() {
     res.json({ status: 'success', agent });
   });
 
-  app.get('/api/catalog/:agentId', (req, res) => {
-    const agent = findAgent(req.params.agentId);
+  app.get('/api/catalog/:agentId', async (req, res) => {
+    const agent = await findAgent(req.params.agentId);
     if (!agent) {
       res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
       return;
     }
     res.json({ status: 'success', agent });
   });
-  app.get('/api/solvamos/:agentId/index.md', (req, res) => {
-    const agent = findAgent(req.params.agentId);
+  app.get('/api/solvamos/:agentId/index.md', async (req, res) => {
+    const agent = await findAgent(req.params.agentId);
     if (!agent) {
       res.status(404).type('text/plain').send('Agent not found');
       return;
@@ -190,13 +192,13 @@ async function createApp() {
     res.type('text/markdown; charset=utf-8').send(agentToMarkdown(agent));
   });
 
-  app.get('/api/solvamos/:agentId', (req, res) => {
-    const agent = findAgent(req.params.agentId);
+  app.get('/api/solvamos/:agentId', async (req, res) => {
+    const agent = await findAgent(req.params.agentId);
     if (!agent) {
       res.status(404).json({ status: 'error', message: 'Agent not found in catalog' });
       return;
     }
-    const catalog = getCachedCatalog();
+    const catalog = await getCachedCatalog();
     res.json({
       status: 'success',
       version: catalog.version,
@@ -241,13 +243,16 @@ async function createApp() {
 }
 
 async function main() {
+  await initCatalogStore(config);
   const app = await createApp();
   app.listen(config.port, () => {
     console.log(`[solvamos-catalog] http://127.0.0.1:${config.port}`);
     console.log(`[solvamos-catalog] landing     ${config.publicBaseUrl}/`);
     console.log(`[solvamos-catalog] marketplace ${config.publicBaseUrl}/marketplace`);
     console.log(`[solvamos-catalog] API         ${config.publicBaseUrl}/api/catalog`);
-    console.log(`[solvamos-catalog] store       ${config.storePath}`);
+    console.log(
+      `[solvamos-catalog] store       ${process.env.DATABASE_URL ? 'CatalogAgent (postgres)' : config.storePath}`
+    );
     console.log(
       `[solvamos-catalog] admin       ${config.adminSecret ? 'CATALOG_ADMIN_SECRET set' : 'open (dev) / required in prod'}`
     );

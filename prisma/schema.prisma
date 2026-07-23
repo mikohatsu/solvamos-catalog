@@ -1,0 +1,49 @@
+// solvamos-catalog reads/writes the same CatalogAgent table as Studio (shared Cloud SQL).
+// Migrations are owned by solvamos-studio.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CatalogAgent {
+  catalogId       String   @id
+  agentId         String   @unique
+  fqn             String   @default("")
+  title           String
+  description     String   @db.Text @default("")
+  useCase         String   @db.Text @default("")
+  category        String   @default("ai_ml")
+  role            String?
+  tone            String?
+  invokeUrl       String
+  originInvokeUrl String?
+  agentCardUrl    String?
+  feeUsdc         Float    @default(0)
+  token           String   @default("USDC")
+  network         String   @default("devnet")
+  usdcMint        String?
+  paymentProtocol String   @default("free")
+  recipientWallet String?
+  tags            String[]
+  source          String   @default("studio")
+  studioOrigin    String?
+  tenantId        String?
+  ownerUserId     String?
+  ownerEmail      String?
+  status          String   @default("listed")
+  endpoints       Json?
+  listedAt        DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([tenantId])
+  @@index([ownerUserId])
+  @@index([studioOrigin])
+  @@index([category])
+  @@map("CatalogAgent")
+}

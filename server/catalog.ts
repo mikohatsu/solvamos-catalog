@@ -1,80 +1,24 @@
 import fs from 'fs';
 import path from 'path';
+import {
+  finalizeAgent,
+  type AgentEndpoint,
+  type AgentStatus,
+  type CatalogConfig,
+  type PublicAgent,
+  type PublicCatalog,
+} from './catalog-model.js';
+import { hasDatabaseUrl } from './db.js';
+import * as dbStore from './catalog-db-store.js';
 
-export type CatalogConfig = {
-  port: number;
-  publicBaseUrl: string;
-  studioUrl: string;
-  adminSecret: string;
-  storePath: string;
-  /** Optional one-shot import origins (legacy). Not used as live source of truth. */
-  importSources: string[];
-};
-
-export type AgentEndpoint = {
-  method: 'GET' | 'POST';
-  path: string;
-  description: string;
-  price_usdc: number;
-  payment_protocol: string;
-};
-
-export type AgentStatus = 'listed' | 'unlisted' | 'paused';
-
-export type PublicAgent = {
-  fqn: string;
-  catalog_id: string;
-  agent_id: string;
-  title: string;
-  description: string;
-  use_case: string;
-  category: string;
-  role?: string;
-  tone?: string;
-  invoke_url: string;
-  origin_invoke_url?: string;
-  agent_card_url?: string;
-  page_url: string;
-  api_url: string;
-  markdown_url: string;
-  fee_usdc: number;
-  token: string;
-  network: string;
-  usdc_mint?: string;
-  payment_protocol: string;
-  recipient_wallet?: string;
-  tags: string[];
-  source: string;
-  studio_origin?: string;
-  tenant_id?: string;
-  status: AgentStatus;
-  listed_at?: string;
-  updated_at?: string;
-  endpoint_count: number;
-  endpoints: AgentEndpoint[];
-  has_metering: boolean;
-  has_free_tier: boolean;
-  min_price_usd: number;
-  max_price_usd: number;
-};
-
-export type PublicCatalog = {
-  version: number;
-  status: 'success';
-  catalog: 'solvamos';
-  protocol: string;
-  generated_at: string;
-  base_url: string;
-  studio_url: string;
-  marketplace_url: string;
-  agent_count: number;
-  paid_count: number;
-  free_count: number;
-  payment_hint: string;
-  store: 'solvamos-catalog';
-  agents: PublicAgent[];
-  data: Array<Record<string, unknown>>;
-};
+export type {
+  CatalogConfig,
+  AgentEndpoint,
+  AgentStatus,
+  PublicAgent,
+  PublicCatalog,
+} from './catalog-model.js';
+export { finalizeAgent } from './catalog-model.js';
 
 type StoreFile = {
   version: number;
@@ -88,90 +32,11 @@ let store: StoreFile = { version: 1, updated_at: new Date().toISOString(), agent
 let baseUrl = 'http://127.0.0.1:4173';
 let studioUrl = 'http://localhost:3000';
 let storePath = path.join(process.cwd(), '.data', 'catalog-store.json');
+let useDb = false;
 
 function ensureDir(filePath: string) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function buildEndpoints(invokeUrl: string, fee: number, protocol: string): AgentEndpoint[] {
-  const pathPart = (() => {
-    try {
-      return new URL(invokeUrl).pathname;
-    } catch {
-      return '/v1/agents/{agentId}/invoke';
-    }
-  })();
-  return [
-    {
-      method: 'GET',
-      path: pathPart,
-      description: 'Invoke with ?prompt=… query parameter.',
-      price_usdc: fee,
-      payment_protocol: protocol,
-    },
-    {
-      method: 'POST',
-      path: pathPart,
-      description: 'Invoke with JSON body { "prompt": "…" }.',
-      price_usdc: fee,
-      payment_protocol: protocol,
-    },
-  ];
-}
-
-export function finalizeAgent(
-  partial: Partial<PublicAgent> & { agent_id: string },
-  catalogBase: string
-): PublicAgent {
-  const agentId = partial.agent_id;
-  const fee = Number(partial.fee_usdc ?? 0) || 0;
-  const protocol = fee > 0 ? String(partial.payment_protocol || 'x402 / MPP') : 'free';
-  const invoke = String(partial.invoke_url || '');
-  const status = (partial.status || 'listed') as AgentStatus;
-  const endpoints =
-    Array.isArray(partial.endpoints) && partial.endpoints.length > 0
-      ? partial.endpoints
-      : buildEndpoints(invoke, fee, protocol);
-  const now = new Date().toISOString();
-  return {
-    fqn: partial.fqn || `solvamos/${agentId}`,
-    catalog_id: partial.catalog_id || `solvamos_${agentId}`,
-    agent_id: agentId,
-    title: String(partial.title || agentId),
-    description: String(partial.description || ''),
-    use_case:
-      partial.use_case ||
-      `Call this SolVamos RAG agent with ${protocol === 'free' ? 'plain HTTP' : 'pay fetch (x402/MPP)'}.`,
-    category: partial.category || 'ai_ml',
-    role: partial.role,
-    tone: partial.tone,
-    invoke_url: invoke,
-    origin_invoke_url: partial.origin_invoke_url,
-    agent_card_url: partial.agent_card_url,
-    page_url: `${catalogBase}/a/${encodeURIComponent(agentId)}`,
-    api_url: `${catalogBase}/api/solvamos/${encodeURIComponent(agentId)}`,
-    markdown_url: `${catalogBase}/api/solvamos/${encodeURIComponent(agentId)}/index.md`,
-    fee_usdc: fee,
-    token: String(partial.token || 'USDC'),
-    network: String(partial.network || 'devnet'),
-    usdc_mint: partial.usdc_mint,
-    payment_protocol: protocol,
-    recipient_wallet: partial.recipient_wallet,
-    tags: Array.isArray(partial.tags) ? partial.tags.map(String) : ['solvamos', 'a2a', 'x402'],
-    source: String(partial.source || partial.studio_origin || 'studio'),
-    studio_origin: partial.studio_origin,
-    tenant_id: partial.tenant_id,
-    status,
-    listed_at: partial.listed_at || now,
-    updated_at: now,
-    endpoint_count: endpoints.length,
-    endpoints,
-    has_metering: fee > 0,
-    has_free_tier: fee === 0,
-    min_price_usd: fee,
-    max_price_usd: fee,
-  };
 }
 
 function saveStore() {
@@ -196,17 +61,31 @@ function loadSeedIfEmpty() {
     }
     if (rows.length) {
       saveStore();
-      console.log(`[catalog-store] seeded ${rows.length} agents`);
+      console.log(`[catalog-store] seeded ${rows.length} agents (file fallback)`);
     }
   } catch (err) {
     console.error('[catalog-store] seed failed', err);
   }
 }
 
-export function initCatalogStore(config: CatalogConfig) {
+export async function initCatalogStore(config: CatalogConfig) {
   baseUrl = config.publicBaseUrl;
   studioUrl = config.studioUrl;
   storePath = config.storePath;
+  useDb = hasDatabaseUrl();
+
+  if (useDb) {
+    try {
+      const { prisma } = await import('./db.js');
+      const count = await prisma.catalogAgent.count();
+      console.log(`[catalog-store] DATABASE_URL set — CatalogAgent rows=${count} (source of truth)`);
+      return;
+    } catch (err: any) {
+      console.error('[catalog-store] DB init failed, falling back to file', err?.message || err);
+      useDb = false;
+    }
+  }
+
   try {
     if (fs.existsSync(storePath)) {
       const raw = JSON.parse(fs.readFileSync(storePath, 'utf8')) as StoreFile;
@@ -215,7 +94,6 @@ export function initCatalogStore(config: CatalogConfig) {
         updated_at: raw.updated_at || new Date().toISOString(),
         agents: raw.agents || {},
       };
-      // Re-finalize page URLs for current PUBLIC_BASE_URL
       for (const [id, agent] of Object.entries(store.agents)) {
         store.agents[id] = finalizeAgent(agent, baseUrl);
       }
@@ -226,7 +104,7 @@ export function initCatalogStore(config: CatalogConfig) {
   }
   loadSeedIfEmpty();
   console.log(
-    `[catalog-store] path=${storePath} agents=${Object.keys(store.agents).length} (source of truth)`
+    `[catalog-store] path=${storePath} agents=${Object.keys(store.agents).length} (file fallback)`
   );
 }
 
@@ -269,10 +147,18 @@ function listedAgents(filter?: { tenantId?: string; studioOrigin?: string }): Pu
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
-export function buildPublicCatalog(filter?: {
+export async function buildPublicCatalog(filter?: {
   tenantId?: string;
   studioOrigin?: string;
-}): PublicCatalog {
+}): Promise<PublicCatalog> {
+  if (useDb) {
+    return dbStore.dbListListed({
+      catalogBase: baseUrl,
+      studioUrl,
+      tenantId: filter?.tenantId,
+      studioOrigin: filter?.studioOrigin,
+    });
+  }
   const agents = listedAgents(filter);
   const paid_count = agents.filter((a) => a.fee_usdc > 0).length;
   return {
@@ -288,18 +174,19 @@ export function buildPublicCatalog(filter?: {
     paid_count,
     free_count: agents.length - paid_count,
     payment_hint:
-      'Paid agents: pay fetch "<invoke_url>?prompt=hello" (x402/MPP). Free agents: plain HTTP POST. Catalog store is solvamos-catalog (source of truth).',
+      'Paid agents: pay fetch "<invoke_url>?prompt=hello" (x402/MPP). Free agents: plain HTTP POST. CatalogAgent DB is source of truth when DATABASE_URL is set.',
     store: 'solvamos-catalog',
     agents,
     data: agents.map(toStudioMirror),
   };
 }
 
-export function getCachedCatalog(): PublicCatalog {
+export async function getCachedCatalog(): Promise<PublicCatalog> {
   return buildPublicCatalog();
 }
 
-export function findAgent(idOrFqn: string): PublicAgent | null {
+export async function findAgent(idOrFqn: string): Promise<PublicAgent | null> {
+  if (useDb) return dbStore.dbFindAgent(idOrFqn, baseUrl);
   const key = decodeURIComponent(idOrFqn).replace(/^solvamos\//, '');
   const agent =
     store.agents[key] ||
@@ -310,10 +197,10 @@ export function findAgent(idOrFqn: string): PublicAgent | null {
   return finalizeAgent(agent, baseUrl);
 }
 
-export function upsertAgent(input: Record<string, unknown>): PublicAgent {
+export async function upsertAgent(input: Record<string, unknown>): Promise<PublicAgent> {
   const agentId = String(input.agent_id || input.agentId || '');
   if (!agentId) throw new Error('agent_id required');
-  const existing = store.agents[agentId];
+  const existing = useDb ? null : store.agents[agentId];
   const agent = finalizeAgent(
     {
       ...(existing || {}),
@@ -361,12 +248,21 @@ export function upsertAgent(input: Record<string, unknown>): PublicAgent {
     baseUrl
   );
   if (!agent.invoke_url) throw new Error('invoke_url required');
+
+  if (useDb) {
+    return dbStore.dbUpsertAgent(agent, {
+      ownerUserId: input.owner_user_id || input.ownerUserId ? String(input.owner_user_id || input.ownerUserId) : undefined,
+      ownerEmail: input.owner_email || input.ownerEmail ? String(input.owner_email || input.ownerEmail) : undefined,
+    });
+  }
+
   store.agents[agentId] = agent;
   saveStore();
   return agent;
 }
 
-export function unlistAgent(agentId: string): PublicAgent | null {
+export async function unlistAgent(agentId: string): Promise<PublicAgent | null> {
+  if (useDb) return dbStore.dbUnlistAgent(agentId, baseUrl);
   const existing = store.agents[agentId];
   if (!existing) return null;
   const agent = finalizeAgent({ ...existing, status: 'unlisted' }, baseUrl);
@@ -440,6 +336,8 @@ export function normalizeStudioPayload(entry: Record<string, unknown>, studioOri
     tags: entry.tags,
     tenant_id: entry.tenantId || entry.tenant_id,
     studio_origin: studioOrigin || entry.studioOrigin || entry.studio_origin,
+    owner_user_id: entry.ownerUserId || entry.owner_user_id,
+    owner_email: entry.ownerEmail || entry.owner_email,
     status: entry.status || 'listed',
     source: studioOrigin || 'studio',
   };
