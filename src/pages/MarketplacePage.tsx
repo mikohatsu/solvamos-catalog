@@ -94,28 +94,11 @@ export default function MarketplacePage() {
     });
   }, [catalog, query, category]);
 
-  const totalInvocations = useMemo(
-    () =>
-      (catalog?.agents || []).reduce((sum, a) => {
-        const m = (a as PublicAgent & { metrics?: { totalCalls?: number } }).metrics;
-        return sum + (m?.totalCalls ?? 0);
-      }, 0),
-    [catalog]
-  );
-
-  const usdcSettled = useMemo(
-    () =>
-      (catalog?.agents || []).reduce((sum, a) => {
-        const m = (a as PublicAgent & { metrics?: { totalRevenueUsdc?: number } }).metrics;
-        if (typeof m?.totalRevenueUsdc === 'number') return sum + m.totalRevenueUsdc;
-        return sum;
-      }, 0),
-    [catalog]
-  );
-
   const studio = catalog?.studio_url || studioUrl || 'https://solvamos-studio-74094114833.asia-northeast3.run.app';
   const activeCount = catalog?.agents?.length ?? 0;
   const totalCount = catalog?.agent_count ?? activeCount;
+  const paidCount = catalog?.paid_count ?? (catalog?.agents || []).filter((a) => a.fee_usdc > 0).length;
+  const freeCount = catalog?.free_count ?? Math.max(0, activeCount - paidCount);
 
   const copyApi = async (e: MouseEvent, agent: PublicAgent) => {
     e.preventDefault();
@@ -157,21 +140,17 @@ export default function MarketplacePage() {
 
         <div className="relative z-10 mt-8 grid grid-cols-2 gap-4 border-t border-slate-800/80 pt-6 font-mono text-xs sm:grid-cols-4">
           <StatCard
-            label="Active Agents"
+            label="Listed Agents"
             value={`${activeCount} / ${totalCount}`}
             valueClass="text-cyan-400"
           />
+          <StatCard label="Paid Agents" value={String(paidCount)} valueClass="text-emerald-400" />
+          <StatCard label="Free Agents" value={String(freeCount)} valueClass="text-white" />
           <StatCard
-            label="Total Invocations"
-            value={totalInvocations.toLocaleString()}
-            valueClass="text-white"
+            label="Catalog Protocol"
+            value={catalog?.protocol || 'x402 / MPP'}
+            valueClass="text-indigo-400"
           />
-          <StatCard
-            label="USDC Settled"
-            value={`$${usdcSettled.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-            valueClass="text-emerald-400"
-          />
-          <StatCard label="Avg Response Time" value="~435ms" valueClass="text-indigo-400" />
         </div>
       </div>
 
@@ -266,12 +245,9 @@ function CatalogAgentCard({
   const category = agent.category || agent.role || 'General';
   const status = 'ACTIVE';
   const version = agent.tags.find((x) => /^v?\d/.test(x)) || 'v1.0';
-  const metrics = (agent as PublicAgent & {
-    metrics?: { totalCalls?: number; avgLatencyMs?: number };
-  }).metrics;
-  const calls = metrics?.totalCalls ?? 0;
-  const latency = metrics?.avgLatencyMs ?? 435;
-  const ragDocs = agent.endpoint_count || agent.tags.filter((x) => /doc|rag|pdf/i.test(x)).length || 0;
+  const network = agent.network || 'devnet';
+  const endpointCount = agent.endpoint_count || agent.endpoints?.length || 0;
+  const protocol = agent.payment_protocol || (agent.fee_usdc > 0 ? 'x402 / MPP' : 'free');
 
   return (
     <div
@@ -326,12 +302,10 @@ function CatalogAgentCard({
             </div>
           </div>
           <div>
-            <div className="text-[10px] text-slate-500 uppercase">Vertex RAG Docs</div>
+            <div className="text-[10px] text-slate-500 uppercase">Network</div>
             <div className="mt-0.5 flex items-center space-x-1 text-sm font-bold text-white">
               <Database className="h-3.5 w-3.5 text-cyan-400" />
-              <span>
-                {ragDocs} Linked Docs
-              </span>
+              <span className="uppercase">{network}</span>
             </div>
           </div>
         </div>
@@ -341,11 +315,11 @@ function CatalogAgentCard({
         <div className="mb-4 flex items-center justify-between border-t border-slate-800/60 pt-3 font-mono text-[11px] text-slate-400">
           <div className="flex items-center space-x-1">
             <Activity className="h-3.5 w-3.5 text-emerald-400" />
-            <span>{calls.toLocaleString()} Calls</span>
+            <span>{endpointCount} Endpoints</span>
           </div>
           <div className="flex items-center space-x-1">
             <Clock className="h-3.5 w-3.5 text-indigo-400" />
-            <span>{latency}ms Avg</span>
+            <span>{protocol}</span>
           </div>
         </div>
 
