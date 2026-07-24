@@ -7,9 +7,69 @@ import { prisma } from './db.js';
 import type { AgentEndpoint, AgentStatus, PublicAgent, PublicCatalog } from './catalog-model.js';
 import { finalizeAgent } from './catalog-model.js';
 
+const LOCAL_HOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i;
+
 function asEndpoints(value: unknown): AgentEndpoint[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value as AgentEndpoint[];
+}
+
+/** Rewrite stale local Lab URLs to the live Studio / gateway origin. */
+export function rewriteServiceUrl(
+  url: string | null | undefined,
+  studioUrl: string,
+  opts?: { gatewayUrl?: string; feeUsdc?: number; agentId?: string }
+): string {
+  const raw = String(url || '').trim();
+  const studio = studioUrl.replace(/\/$/, '');
+  const gateway = (opts?.gatewayUrl || process.env.PAY_GATEWAY_URL || '').replace(/\/$/, '');
+  const fee = opts?.feeUsdc ?? 0;
+  const agentId = opts?.agentId || '';
+
+  let out = raw;
+  if (!out || LOCAL_HOST_RE.test(out) || out.startsWith('pending://')) {
+    if (fee > 0 && gateway && !LOCAL_HOST_RE.test(gateway)) {
+      out = `${gateway}/v1/agents/${encodeURIComponent(agentId)}/invoke`;
+    } else if (studio) {
+      out = `${studio}/api/agents/${encodeURIComponent(agentId)}/invoke`;
+    }
+  } else if (LOCAL_HOST_RE.test(out) && studio) {
+    out = out.replace(LOCAL_HOST_RE, studio);
+  }
+  return out;
+}
+
+function rewriteOriginFields(
+  row: {
+    agentId: string;
+    invokeUrl: string;
+    originInvokeUrl: string | null;
+    agentCardUrl: string | null;
+    studioOrigin: string | null;
+    feeUsdc: number;
+  },
+  studioUrl: string
+) {
+  const studio = studioUrl.replace(/\/$/, '');
+  const gateway = (process.env.PAY_GATEWAY_URL || '').replace(/\/$/, '');
+  const invokeUrl = rewriteServiceUrl(row.invokeUrl, studio, {
+    gatewayUrl: gateway,
+    feeUsdc: row.feeUsdc,
+    agentId: row.agentId,
+  });
+  const originInvokeUrl = rewriteServiceUrl(
+    row.originInvokeUrl || `${studio}/api/agents/${encodeURIComponent(row.agentId)}/invoke`,
+    studio,
+    { feeUsdc: 0, agentId: row.agentId }
+  );
+  const agentCardUrl = rewriteServiceUrl(
+    row.agentCardUrl || `${studio}/api/agents/${encodeURIComponent(row.agentId)}/agent-card`,
+    studio,
+    { feeUsdc: 0, agentId: row.agentId }
+  ).replace(/\/invoke$/, '/agent-card');
+  const studioOrigin =
+    !row.studioOrigin || LOCAL_HOST_RE.test(row.studioOrigin) ? studio : row.studioOrigin;
+  return { invokeUrl, originInvokeUrl, agentCardUrl, studioOrigin };
 }
 
 export function rowToPublic(
@@ -43,8 +103,29 @@ export function rowToPublic(
     listedAt: Date;
     updatedAt: Date;
   },
-  catalogBase: string
+  catalogBase: string,
+  studioUrl?: string
 ): PublicAgent {
+  const studio = (studioUrl || process.env.STUDIO_URL || '').replace(/\/$/, '');
+  const rewritten = studio
+    ? rewriteOriginFields(
+        {
+          agentId: row.agentId,
+          invokeUrl: row.invokeUrl,
+          originInvokeUrl: row.originInvokeUrl,
+          agentCardUrl: row.agentCardUrl,
+          studioOrigin: row.studioOrigin,
+          feeUsdc: row.feeUsdc,
+        },
+        studio
+      )
+    : {
+        invokeUrl: row.invokeUrl,
+        originInvokeUrl: row.originInvokeUrl,
+        agentCardUrl: row.agentCardUrl,
+        studioOrigin: row.studioOrigin,
+      };
+
   return finalizeAgent(
     {
       catalog_id: row.catalogId,
@@ -56,9 +137,9 @@ export function rowToPublic(
       category: row.category,
       role: row.role || undefined,
       tone: row.tone || undefined,
-      invoke_url: row.invokeUrl,
-      origin_invoke_url: row.originInvokeUrl || undefined,
-      agent_card_url: row.agentCardUrl || undefined,
+      invoke_url: rewritten.invokeUrl,
+      origin_invoke_url: rewritten.originInvokeUrl || undefined,
+      agent_card_url: rewritten.agentCardUrl || undefined,
       fee_usdc: row.feeUsdc,
       token: row.token,
       network: row.network,
@@ -67,7 +148,7 @@ export function rowToPublic(
       recipient_wallet: row.recipientWallet || undefined,
       tags: row.tags || [],
       source: row.source,
-      studio_origin: row.studioOrigin || undefined,
+      studio_origin: rewritten.studioOrigin || undefined,
       tenant_id: row.tenantId || undefined,
       status: (row.status as AgentStatus) || 'listed',
       listed_at: row.listedAt.toISOString(),
@@ -84,15 +165,21 @@ export async function dbListListed(opts: {
   tenantId?: string;
   studioOrigin?: string;
 }): Promise<PublicCatalog> {
+  // Marketplace: real Studio agents only — never hardcoded seed/mock IDs.
+  const SEED_IDS = ['support-copilot-001', 'academic-research-001', 'demo-rag'];
   const rows = await prisma.catalogAgent.findMany({
     where: {
       status: 'listed',
+      agentId: { notIn: SEED_IDS },
+      NOT: [{ source: 'seed' }],
       ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
       ...(opts.studioOrigin ? { studioOrigin: opts.studioOrigin } : {}),
     },
     orderBy: { title: 'asc' },
   });
-  const agents = rows.map((r) => rowToPublic(r, opts.catalogBase));
+  // Prefer owned agents when ownership rows exist; still include other non-seed listed
+  // studio agents (pre-ownership rows) so marketplace does not shrink unexpectedly.
+  const agents = rows.map((r) => rowToPublic(r, opts.catalogBase, opts.studioUrl));
   const paid_count = agents.filter((a) => a.fee_usdc > 0).length;
   return {
     version: 1,
@@ -143,7 +230,11 @@ export async function dbListListed(opts: {
   };
 }
 
-export async function dbFindAgent(idOrFqn: string, catalogBase: string): Promise<PublicAgent | null> {
+export async function dbFindAgent(
+  idOrFqn: string,
+  catalogBase: string,
+  studioUrl?: string
+): Promise<PublicAgent | null> {
   const key = decodeURIComponent(idOrFqn).replace(/^solvamos\//, '');
   const row =
     (await prisma.catalogAgent.findFirst({
@@ -152,7 +243,47 @@ export async function dbFindAgent(idOrFqn: string, catalogBase: string): Promise
         OR: [{ agentId: key }, { catalogId: key }, { fqn: key }, { fqn: `solvamos/${key}` }],
       },
     })) || null;
-  return row ? rowToPublic(row, catalogBase) : null;
+  return row ? rowToPublic(row, catalogBase, studioUrl) : null;
+}
+
+/** Persist rewrite of localhost Lab URLs so DB SoT matches production Studio. */
+export async function repairLocalhostListings(studioUrl: string): Promise<number> {
+  const studio = studioUrl.replace(/\/$/, '');
+  if (!studio || LOCAL_HOST_RE.test(studio)) return 0;
+  const rows = await prisma.catalogAgent.findMany();
+  let n = 0;
+  for (const row of rows) {
+    const next = rewriteOriginFields(
+      {
+        agentId: row.agentId,
+        invokeUrl: row.invokeUrl,
+        originInvokeUrl: row.originInvokeUrl,
+        agentCardUrl: row.agentCardUrl,
+        studioOrigin: row.studioOrigin,
+        feeUsdc: row.feeUsdc,
+      },
+      studio
+    );
+    const changed =
+      next.invokeUrl !== row.invokeUrl ||
+      next.originInvokeUrl !== (row.originInvokeUrl || '') ||
+      next.agentCardUrl !== (row.agentCardUrl || '') ||
+      next.studioOrigin !== (row.studioOrigin || '');
+    if (!changed) continue;
+    await prisma.catalogAgent.update({
+      where: { agentId: row.agentId },
+      data: {
+        invokeUrl: next.invokeUrl,
+        originInvokeUrl: next.originInvokeUrl,
+        agentCardUrl: next.agentCardUrl,
+        studioOrigin: next.studioOrigin,
+        network: process.env.PAYMENT_NETWORK || row.network || 'devnet',
+      },
+    });
+    n += 1;
+  }
+  if (n) console.log(`[catalog-db] repaired ${n} localhost listing URL(s) → ${studio}`);
+  return n;
 }
 
 export async function dbUpsertAgent(
@@ -228,5 +359,5 @@ export async function dbUnlistAgent(agentId: string, catalogBase: string): Promi
     where: { agentId },
     data: { status: 'unlisted' },
   });
-  return rowToPublic(row, catalogBase);
+  return rowToPublic(row, catalogBase, process.env.STUDIO_URL || undefined);
 }

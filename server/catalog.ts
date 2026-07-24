@@ -50,22 +50,9 @@ function saveStore() {
 }
 
 function loadSeedIfEmpty() {
-  if (Object.keys(store.agents).length > 0) return;
-  try {
-    if (!fs.existsSync(SEED_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
-    const rows = Array.isArray(raw.agents) ? raw.agents : [];
-    for (const row of rows) {
-      const agent = finalizeAgent({ ...row, agent_id: String(row.agent_id), status: 'listed' }, baseUrl);
-      store.agents[agent.agent_id] = agent;
-    }
-    if (rows.length) {
-      saveStore();
-      console.log(`[catalog-store] seeded ${rows.length} agents (file fallback)`);
-    }
-  } catch (err) {
-    console.error('[catalog-store] seed failed', err);
-  }
+  // Seed/mock agents must never appear on the public marketplace.
+  // DB (CatalogAgent + ownerUserId) is the only production source of truth.
+  return;
 }
 
 export async function initCatalogStore(config: CatalogConfig) {
@@ -79,6 +66,8 @@ export async function initCatalogStore(config: CatalogConfig) {
       const { prisma } = await import('./db.js');
       const count = await prisma.catalogAgent.count();
       console.log(`[catalog-store] DATABASE_URL set — CatalogAgent rows=${count} (source of truth)`);
+      const { repairLocalhostListings } = await import('./catalog-db-store.js');
+      await repairLocalhostListings(studioUrl);
       return;
     } catch (err: any) {
       console.error('[catalog-store] DB init failed, falling back to file', err?.message || err);
@@ -140,8 +129,11 @@ export function toStudioMirror(agent: PublicAgent): Record<string, unknown> {
 }
 
 function listedAgents(filter?: { tenantId?: string; studioOrigin?: string }): PublicAgent[] {
+  const SEED_IDS = new Set(['support-copilot-001', 'academic-research-001', 'demo-rag']);
   return Object.values(store.agents)
     .filter((a) => a.status === 'listed')
+    .filter((a) => !SEED_IDS.has(a.agent_id))
+    .filter((a) => a.source !== 'seed')
     .filter((a) => (filter?.tenantId ? a.tenant_id === filter.tenantId : true))
     .filter((a) => (filter?.studioOrigin ? a.studio_origin === filter.studioOrigin : true))
     .sort((a, b) => a.title.localeCompare(b.title));
@@ -186,7 +178,7 @@ export async function getCachedCatalog(): Promise<PublicCatalog> {
 }
 
 export async function findAgent(idOrFqn: string): Promise<PublicAgent | null> {
-  if (useDb) return dbStore.dbFindAgent(idOrFqn, baseUrl);
+  if (useDb) return dbStore.dbFindAgent(idOrFqn, baseUrl, studioUrl);
   const key = decodeURIComponent(idOrFqn).replace(/^solvamos\//, '');
   const agent =
     store.agents[key] ||
