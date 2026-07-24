@@ -26,8 +26,6 @@ type StoreFile = {
   agents: Record<string, PublicAgent>;
 };
 
-const SEED_FILE = path.join(process.cwd(), '.data', 'seed-catalog.json');
-
 let store: StoreFile = { version: 1, updated_at: new Date().toISOString(), agents: {} };
 let baseUrl = 'http://127.0.0.1:4173';
 let studioUrl = 'http://localhost:3000';
