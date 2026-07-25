@@ -1,7 +1,7 @@
 From bd46550a7986e325f73145487ed14fcb426d83f2 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sat, 25 Jul 2026 05:23:09 +0000
-Subject: [PATCH] Add agent delete with AI App teardown and fix engine
+Subject: [PATCH 1/2] Add agent delete with AI App teardown and fix engine
  provisioning.
 
 Discovery Engine requests now send X-Goog-User-Project, wait for datastore readiness, and hard-fail create when the AI Applications engine is missing. DELETE /api/agents/:id removes the engine, datastore, vault secret, corpus, catalog listing, and DB row.
@@ -931,6 +931,1856 @@ index 320e2fc..e6a0b45 100644
                    </div>
                  </div>
                </div>
+-- 
+2.43.0
+
+
+From 62b29ffe3ec2be20be570ad637818fd868a17c86 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 25 Jul 2026 05:32:03 +0000
+Subject: [PATCH 2/2] Hard-fail agent create/update and add developer
+ logs/evidence UI.
+
+Pipeline steps now abort on any failure with structured server logs. Adds a log ring buffer, persisted invoke evidence (citations/hosts/tools), and developer pages at /logs and /evidence.
+---
+ .env.example                  |   7 +-
+ server.ts                     | 458 +++++++++++++++++++---------------
+ server/dev-log.ts             | 177 +++++++++++++
+ server/invoke-evidence.ts     | 189 ++++++++++++++
+ server/invoke-handler.ts      |  48 +++-
+ server/paysh-catalog.ts       |  15 +-
+ src/App.tsx                   |   6 +
+ src/AppShell.tsx              |   6 +-
+ src/lib/appRoute.ts           |   2 +
+ src/pages/DevEvidencePage.tsx | 453 +++++++++++++++++++++++++++++++++
+ src/pages/DevLogsPage.tsx     | 182 ++++++++++++++
+ 11 files changed, 1336 insertions(+), 207 deletions(-)
+ create mode 100644 server/dev-log.ts
+ create mode 100644 server/invoke-evidence.ts
+ create mode 100644 src/pages/DevEvidencePage.tsx
+ create mode 100644 src/pages/DevLogsPage.tsx
+
+diff --git a/.env.example b/.env.example
+index 61b0d0a..c1b135b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -31,9 +31,10 @@ VERTEX_DATA_STORE_ID=
+ VERTEX_SHARED_DATA_STORE=false
+ VERTEX_SEARCH_LOCATION=global
+ VERTEX_SEARCH_COLLECTION=default_collection
+-# Local Gemini-only demos: allow agent create when AI Applications engine fails.
+-# Production / Cloud Run should leave this unset/false.
+-ALLOW_AI_APP_SOFT_FAIL=false
++# Create/update hard-fail: any pipeline step failure aborts (no soft-fail).
++# Dev logs / evidence buffers (in-memory + .data JSON)
++# DEV_LOG_BUFFER_SIZE=2500
++# INVOKE_EVIDENCE_BUFFER_SIZE=500
+ GEMINI_MODEL=gemini-2.0-flash
+ 
+ # Google OAuth SSO (Web Client) — see docs/DRIVE_OAUTH_SETUP.md
+diff --git a/server.ts b/server.ts
+index a0768e1..7fb0685 100644
+--- a/server.ts
++++ b/server.ts
+@@ -71,9 +71,17 @@ import {
+   restartManagedPayGateway,
+   stopManagedPayGateway,
+ } from './server/pay-gateway-manager.js';
++import { installConsoleCapture, serverLog, listDevLogs, clearDevLogs, devLogStats } from './server/dev-log.js';
++import {
++  listInvokeEvidence,
++  getInvokeEvidence,
++  clearInvokeEvidence,
++  evidenceStats,
++} from './server/invoke-evidence.js';
+ 
+ dotenv.config();
+ assertProductionSafety();
++installConsoleCapture();
+ 
+ const app = express();
+ app.use(express.json({ limit: '20mb' }));
+@@ -128,17 +136,12 @@ app.use((req, res, next) => {
+   const start = Date.now();
+   res.on('finish', () => {
+     if (req.path.startsWith('/api') || req.path === '/healthz') {
+-      console.log(
+-        JSON.stringify({
+-          severity: 'INFO',
+-          httpRequest: {
+-            requestMethod: req.method,
+-            requestUrl: req.originalUrl,
+-            status: res.statusCode,
+-            latency: `${(Date.now() - start) / 1000}s`,
+-          },
+-        })
+-      );
++      const level =
++        res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
++      serverLog(level, 'http', `${req.method} ${req.originalUrl} → ${res.statusCode}`, {
++        latencyMs: Date.now() - start,
++        status: res.statusCode,
++      });
+     }
+   });
+   next();
+@@ -148,6 +151,51 @@ loadPayShCatalog();
+ registerPlatformAuthRoutes(app);
+ registerDriveAuthRoutes(app);
+ 
++/** Developer: ring-buffer server logs (create/invoke/GCP errors, etc.) */
++app.get('/api/dev/logs', requireGoogleSession, (req, res) => {
++  const level = String(req.query.level || 'all') as any;
++  const tag = req.query.tag ? String(req.query.tag) : undefined;
++  const q = req.query.q ? String(req.query.q) : undefined;
++  const limit = req.query.limit ? Number(req.query.limit) : 300;
++  res.json({
++    status: 'success',
++    stats: devLogStats(),
++    logs: listDevLogs({ level, tag, q, limit }),
++  });
++});
++
++app.delete('/api/dev/logs', requireGoogleSession, (_req, res) => {
++  const cleared = clearDevLogs();
++  res.json({ status: 'success', cleared });
++});
++
++/** Developer: invoke evidence (citations, referenced sites, tools) */
++app.get('/api/dev/evidence', requireGoogleSession, (req, res) => {
++  const agentId = req.query.agentId ? String(req.query.agentId) : undefined;
++  const q = req.query.q ? String(req.query.q) : undefined;
++  const limit = req.query.limit ? Number(req.query.limit) : 100;
++  res.json({
++    status: 'success',
++    stats: evidenceStats(),
++    evidence: listInvokeEvidence({ agentId, q, limit }),
++  });
++});
++
++app.get('/api/dev/evidence/:id', requireGoogleSession, (req, res) => {
++  const row = getInvokeEvidence(req.params.id);
++  if (!row) {
++    res.status(404).json({ status: 'error', message: 'Evidence not found' });
++    return;
++  }
++  res.json({ status: 'success', evidence: row });
++});
++
++app.delete('/api/dev/evidence', requireGoogleSession, (req, res) => {
++  const agentId = req.query.agentId ? String(req.query.agentId) : undefined;
++  const cleared = clearInvokeEvidence(agentId);
++  res.json({ status: 'success', cleared });
++});
++
+ /** Cloud Run / GCLB health */
+ app.get('/healthz', (_req, res) => {
+   res.status(200).json({ ok: true, product: config.product, version: config.version });
+@@ -605,29 +653,52 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+           ? perCallPriceUsdc
+           : 0;
+ 
+-    const pipeline: { step: string; status: 'ok' | 'skip' | 'warn'; detail: string }[] = [];
+-    pipeline.push({
+-      step: 'tenant_bind',
+-      status: 'ok',
+-      detail: `tenant=${tenantId} project=${config.gcpProject || 'n/a'} (shared GCP as customer)`,
+-    });
++    const pipeline: { step: string; status: 'ok' | 'error'; detail: string }[] = [];
++    const failCreate = (step: string, detail: string): never => {
++      serverLog('error', 'create', `${step} failed — aborting agent create`, { agentId, detail });
++      pipeline.push({ step, status: 'error', detail });
++      throw new Error(`[${step}] ${detail}`);
++    };
++    const okStep = (step: string, detail: string) => {
++      serverLog('info', 'create', `${step}: ${detail}`, { agentId });
++      pipeline.push({ step, status: 'ok', detail });
++    };
++
++    okStep(
++      'tenant_bind',
++      `tenant=${tenantId} project=${config.gcpProject || 'n/a'} (shared GCP as customer)`
++    );
++
++    if (resolvedSource === 'google_drive' && !googleDriveFolderId) {
++      failCreate('drive_source', 'Google Drive 소스를 선택했다면 폴더/파일을 반드시 지정하세요.');
++    }
++    if (resolvedSource === 'local_upload' && !hasLocalFiles) {
++      failCreate('local_upload', '로컬 업로드 소스를 선택했다면 파일을 1개 이상 첨부하세요.');
++    }
++    if (resolvedSource === 'website_url' && !websiteUri) {
++      failCreate('website_url', '웹사이트 소스를 선택했다면 URL을 입력하세요.');
++    }
+ 
+     // Persist vault before DB row so create never leaves CREATING orphans on vault failure
+     const gcpStorage = await savePrivateKeyToGCP(agentId, secretKeyBase64);
+-    pipeline.push({
+-      step: 'agent_vault',
+-      status: gcpStorage.mock ? 'warn' : 'ok',
+-      detail: `Dedicated agent vault ${publicKey.slice(0, 4)}…${publicKey.slice(-4)} (separate from user wallet ${
++    okStep(
++      'agent_vault',
++      `Dedicated agent vault ${publicKey.slice(0, 4)}…${publicKey.slice(-4)} (user wallet ${
+         userPrimary?.address ? userPrimary.address.slice(0, 4) + '…' : 'none'
+-      })`,
+-    });
+-    pipeline.push({
+-      step: 'vault_persist',
+-      status: gcpStorage.mock ? 'warn' : 'ok',
+-      detail: gcpStorage.mock
+-        ? `Dev local vault fallback: ${gcpStorage.path}`
+-        : `Secret Manager: ${gcpStorage.path}`,
+-    });
++      })`
++    );
++    if (gcpStorage.mock) {
++      // Intentional local-only path — still recorded loudly in server logs.
++      serverLog(
++        'warn',
++        'create',
++        'Vault stored via LOCAL MOCK (ALLOW_LOCAL_VAULT_FALLBACK). Production must use Secret Manager.',
++        { agentId, path: gcpStorage.path }
++      );
++      okStep('vault_persist', `LOCAL MOCK vault: ${gcpStorage.path}`);
++    } else {
++      okStep('vault_persist', `Secret Manager: ${gcpStorage.path}`);
++    }
+ 
+     // Persist agent row early so RagDocument FK / catalog can attach
+     await putAgent({
+@@ -652,7 +723,7 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+       fee: parsedFeeEarly,
+       perCallPriceUsdc: parsedFeeEarly,
+     });
+-    pipeline.push({ step: 'agent_record_draft', status: 'ok', detail: agentId });
++    okStep('agent_record_draft', agentId);
+ 
+     let vertexDataStoreId: string | undefined;
+     let vertexEngineId: string | undefined;
+@@ -663,6 +734,11 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+     // Website URL forces PUBLIC_WEBSITE app type so site/* indexing can attach.
+     const provisionAppType =
+       resolvedSource === 'website_url' || websiteUri ? 'website' : aiAppType || 'search_docs';
++    serverLog('info', 'create', 'Provisioning AI Applications bundle', {
++      agentId,
++      provisionAppType,
++      resolvedSource,
++    });
+     const aiApp = await ensureAiApplication({
+       displayName: agentName || agentId,
+       appType: provisionAppType,
+@@ -673,150 +749,90 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+     });
+     vertexDataStoreId = aiApp.dataStoreId;
+     vertexEngineId = aiApp.engineId;
+-    indexingStatus =
+-      aiApp.status === 'pending' || aiApp.status === 'error' || !aiApp.engineId
+-        ? 'INDEXING'
+-        : 'ACTIVE';
+-    pipeline.push({
+-      step: 'ai_applications',
+-      status: aiApp.status === 'created' || aiApp.status === 'existing' ? 'ok' : 'warn',
+-      detail: `${aiApp.message || aiApp.dataStoreId}${
+-        aiApp.engineId ? ` engine=${aiApp.engineId}` : ' (NO ENGINE — Gemini-only fallback)'
+-      }${aiApp.sourceNote ? ` · ${aiApp.sourceNote}` : ''}`,
+-    });
+ 
+-    // Default: refuse to create agents without a real AI Applications engine/app.
+-    // Set ALLOW_AI_APP_SOFT_FAIL=true only for local Gemini-only demos.
+-    const allowSoftFail =
+-      process.env.ALLOW_AI_APP_SOFT_FAIL === 'true' ||
+-      process.env.ALLOW_AI_APP_SOFT_FAIL === '1';
+-    if ((!aiApp.engineId || aiApp.status === 'error') && !allowSoftFail) {
+-      // Draft agent has no vertex ids yet — explicitly tear down any orphan store/app.
++    if (!aiApp.engineId || aiApp.status === 'error' || aiApp.status === 'pending') {
+       if (aiApp.dataStoreId) {
+         await destroyAiApplication({
+           dataStoreId: aiApp.dataStoreId,
+           engineId: aiApp.engineId,
+         }).catch((err: any) =>
+-          console.warn('[create] orphan AI App cleanup', err?.message || err)
++          serverLog('warn', 'create', `orphan AI App cleanup: ${err?.message || err}`)
+         );
+       }
+-      throw new Error(
+-        `AI Applications 앱 생성 실패 — 에이전트를 만들지 않습니다. ${
++      failCreate(
++        'ai_applications',
++        `AI Applications 앱/엔진 생성 실패: ${
+           aiApp.message || 'Discovery Engine engine/app missing'
+         }. GOOGLE_CLOUD_PROJECT·ADC·discoveryengine.googleapis.com·Discovery Engine Admin IAM을 확인하세요.`
+       );
+     }
++    indexingStatus = 'ACTIVE';
++    okStep(
++      'ai_applications',
++      `${aiApp.message || aiApp.dataStoreId} engine=${aiApp.engineId}${
++        aiApp.sourceNote ? ` · ${aiApp.sourceNote}` : ''
++      }`
++    );
+ 
+     if (needsDrive && sid) {
+-      try {
+-        const corpus = await ingestDriveSourceForAgent({
+-          sessionId: sid,
+-          agentId,
+-          driveSourceId: String(googleDriveFolderId),
+-        });
+-        driveIngest = { docs: corpus.docs.length };
+-        indexingStatus = corpus.docs.length > 0 ? 'ACTIVE' : indexingStatus;
+-        pipeline.push({
+-          step: 'drive_rag_ingest',
+-          status: corpus.docs.length > 0 ? 'ok' : 'warn',
+-          detail:
+-            corpus.docs.length > 0
+-              ? `Ingested ${corpus.docs.length} Drive doc(s)`
+-              : 'No text-extractable files (Docs/Sheets/txt/md/json/pdf).',
+-        });
++      const corpus = await ingestDriveSourceForAgent({
++        sessionId: sid,
++        agentId,
++        driveSourceId: String(googleDriveFolderId),
++      });
++      driveIngest = { docs: corpus.docs.length };
++      if (corpus.docs.length === 0) {
++        failCreate(
++          'drive_rag_ingest',
++          'Drive에서 추출 가능한 문서가 없습니다 (Docs/Sheets/txt/md/json/pdf).'
++        );
++      }
++      okStep('drive_rag_ingest', `Ingested ${corpus.docs.length} Drive doc(s)`);
+ 
+-        if (vertexDataStoreId && corpus.docs.length > 0 && aiApp.status !== 'error') {
+-          try {
+-            const sync = await syncLocalCorpusToVertex(agentId, vertexDataStoreId);
+-            pipeline.push({
+-              step: 'vertex_import',
+-              status: sync.imported > 0 ? 'ok' : 'warn',
+-              detail: sync.message,
+-            });
+-            if (sync.imported > 0) indexingStatus = 'ACTIVE';
+-          } catch (err: any) {
+-            pipeline.push({
+-              step: 'vertex_import',
+-              status: 'warn',
+-              detail: err?.message || 'Vertex import failed — local corpus still usable',
+-            });
+-          }
+-        }
+-      } catch (err: any) {
+-        pipeline.push({
+-          step: 'drive_rag_ingest',
+-          status: 'warn',
+-          detail: err?.message || 'Drive ingest failed — Google 연동/권한을 확인하세요',
+-        });
+-        indexingStatus = 'INDEXING';
++      if (!vertexDataStoreId) {
++        failCreate('vertex_import', 'vertexDataStoreId missing after AI Applications provision');
++      }
++      const sync = await syncLocalCorpusToVertex(agentId, vertexDataStoreId);
++      if (sync.imported <= 0) {
++        failCreate('vertex_import', sync.message || 'Vertex import imported 0 documents');
+       }
++      okStep('vertex_import', sync.message);
++      indexingStatus = 'ACTIVE';
+     } else if (needsLocal) {
+-      try {
+-        const corpus = await ingestLocalUploadsForAgent({
+-          agentId,
+-          files: localFileList,
+-        });
+-        driveIngest = {
+-          docs: corpus.docs.length,
+-          message: corpus.skipped?.length
+-            ? `skipped: ${corpus.skipped.slice(0, 3).join('; ')}`
+-            : undefined,
+-        };
+-        indexingStatus = corpus.docs.length > 0 ? 'ACTIVE' : indexingStatus;
+-        pipeline.push({
+-          step: 'local_upload_ingest',
+-          status: corpus.docs.length > 0 ? 'ok' : 'warn',
+-          detail:
+-            corpus.docs.length > 0
+-              ? `Ingested ${corpus.docs.length} local file(s)`
+-              : `No text extracted. ${corpus.skipped?.join(' · ') || 'Use txt/md/json/csv/html/pdf'}`,
+-        });
++      const corpus = await ingestLocalUploadsForAgent({
++        agentId,
++        files: localFileList,
++      });
++      driveIngest = {
++        docs: corpus.docs.length,
++        message: corpus.skipped?.length
++          ? `skipped: ${corpus.skipped.slice(0, 3).join('; ')}`
++          : undefined,
++      };
++      if (corpus.docs.length === 0) {
++        failCreate(
++          'local_upload_ingest',
++          `로컬 파일에서 텍스트를 추출하지 못했습니다. ${
++            corpus.skipped?.join(' · ') || 'Use txt/md/json/csv/html/pdf'
++          }`
++        );
++      }
++      okStep('local_upload_ingest', `Ingested ${corpus.docs.length} local file(s)`);
+ 
+-        if (vertexDataStoreId && corpus.docs.length > 0 && aiApp.status !== 'error') {
+-          try {
+-            const sync = await syncLocalCorpusToVertex(agentId, vertexDataStoreId);
+-            pipeline.push({
+-              step: 'vertex_import',
+-              status: sync.imported > 0 ? 'ok' : 'warn',
+-              detail: sync.message,
+-            });
+-            if (sync.imported > 0) indexingStatus = 'ACTIVE';
+-          } catch (err: any) {
+-            pipeline.push({
+-              step: 'vertex_import',
+-              status: 'warn',
+-              detail: err?.message || 'Vertex import failed — local corpus still usable',
+-            });
+-          }
+-        }
+-      } catch (err: any) {
+-        pipeline.push({
+-          step: 'local_upload_ingest',
+-          status: 'warn',
+-          detail: err?.message || 'Local upload ingest failed',
+-        });
+-        indexingStatus = 'INDEXING';
++      if (!vertexDataStoreId) {
++        failCreate('vertex_import', 'vertexDataStoreId missing after AI Applications provision');
+       }
+-    } else if (resolvedSource === 'local_upload') {
+-      pipeline.push({
+-        step: 'local_upload',
+-        status: 'skip',
+-        detail: 'local_upload selected but no files — empty datastore + app only (add files later)',
+-      });
+-    } else if (resolvedSource !== 'google_drive') {
+-      pipeline.push({
+-        step: 'data_source',
+-        status: 'ok',
+-        detail:
+-          aiApp.sourceNote ||
+-          `Source=${resolvedSource} — app+datastore ready`,
+-      });
++      const sync = await syncLocalCorpusToVertex(agentId, vertexDataStoreId);
++      if (sync.imported <= 0) {
++        failCreate('vertex_import', sync.message || 'Vertex import imported 0 documents');
++      }
++      okStep('vertex_import', sync.message);
++      indexingStatus = 'ACTIVE';
+     } else {
+-      pipeline.push({
+-        step: 'drive_rag',
+-        status: 'skip',
+-        detail: 'google_drive selected but no folder/file — empty datastore + app only',
+-      });
++      okStep(
++        'data_source',
++        aiApp.sourceNote || `Source=${resolvedSource} — app+datastore ready (no corpus ingest)`
++      );
+     }
+ 
+     const parsedFee = parsedFeeEarly;
+@@ -850,23 +866,32 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+       ownerUserId: me.user?.id,
+       ownerEmail: me.user?.email,
+     });
+-    pipeline.push({ step: 'agent_record', status: 'ok', detail: agentId });
++    okStep('agent_record', agentId);
+ 
+     const tenant = tenantId ? await getTenant(String(tenantId)) : undefined;
+     const runtimeBase =
+       (tenant?.cloudRunUri && String(tenant.cloudRunUri).replace(/\/$/, '')) ||
+       `${req.protocol}://${req.get('host')}`;
+ 
+-    const listing = await registerAgentOnPayShCatalog(newAgent, {
+-      baseUrl: runtimeBase,
+-      description: req.body.description,
+-    });
++    let listing;
++    try {
++      listing = await registerAgentOnPayShCatalog(newAgent, {
++        baseUrl: runtimeBase,
++        description: req.body.description,
++        // Catalog URL이 설정된 환경에서는 원격 게시 실패 = 생성 실패
++        requireRemote: !!config.catalogSiteUrl,
++      });
++    } catch (err: any) {
++      failCreate('paysh_catalog', err?.message || 'Catalog register failed');
++    }
+     const publicBase = publicBaseFromReq(req);
+     const payShCatalog = enrichCatalogListing(listing, publicBase);
+-    pipeline.push({
+-      step: 'paysh_catalog',
+-      status: 'ok',
+-      detail: `${payShCatalog.catalogId} · ${payShCatalog.catalogPageUrl}`,
++    okStep('paysh_catalog', `${payShCatalog.catalogId} · ${payShCatalog.catalogPageUrl}`);
++
++    serverLog('info', 'create', `Agent create succeeded ${agentId}`, {
++      engineId: vertexEngineId,
++      dataStoreId: vertexDataStoreId,
++      pipeline,
+     });
+ 
+     res.status(201).json({
+@@ -900,6 +925,9 @@ app.post('/api/agents/create', requireGoogleSession, async (req, res) => {
+       }). User wallet is separate.`,
+     });
+   } catch (err: any) {
++    serverLog('error', 'create', `Agent create failed: ${err?.message || err}`, {
++      agentId: createdAgentId,
++    });
+     if (createdAgentId) {
+       // Full teardown (vault / partial AI App / catalog / DB) on create failure
+       await destroyAgent(createdAgentId).catch(async () => {
+@@ -1028,6 +1056,11 @@ app.patch('/api/agents/:id', requireGoogleSession, async (req, res) => {
+ 
+     // Missing store (legacy agents) or Drive source change → ensure AI Applications bundle
+     if (!vertexDataStoreId || (folderChanged && nextFolder) || hasLocalFiles) {
++      serverLog('info', 'update', 'Ensuring AI Applications bundle', {
++        agentId: existing.id,
++        folderChanged,
++        hasLocalFiles,
++      });
+       const aiApp = await ensureAiApplication({
+         displayName: nextName || existing.id,
+         appType: nextAiAppType,
+@@ -1036,10 +1069,17 @@ app.patch('/api/agents/:id', requireGoogleSession, async (req, res) => {
+         websiteUri: nextWebsite,
+         gcsUri: nextGcs,
+       });
+-      if (aiApp.status !== 'error') {
+-        vertexDataStoreId = aiApp.dataStoreId;
+-        vertexEngineId = aiApp.engineId || vertexEngineId;
++      if (aiApp.status === 'error' || !aiApp.engineId) {
++        serverLog('error', 'update', 'AI Applications ensure failed', {
++          agentId: existing.id,
++          message: aiApp.message,
++        });
++        throw new Error(
++          `[ai_applications] ${aiApp.message || 'AI Applications engine/app missing on update'}`
++        );
+       }
++      vertexDataStoreId = aiApp.dataStoreId;
++      vertexEngineId = aiApp.engineId || vertexEngineId;
+     }
+ 
+     if (folderChanged && nextFolder) {
+@@ -1052,40 +1092,58 @@ app.patch('/api/agents/:id', requireGoogleSession, async (req, res) => {
+         });
+         return;
+       }
+-      try {
+-        const corpus = await ingestDriveSourceForAgent({
+-          sessionId: sid,
+-          agentId: existing.id,
+-          driveSourceId: String(nextFolder),
+-        });
+-        driveIngest = { docs: corpus.docs.length };
+-        if (vertexDataStoreId && corpus.docs.length > 0) {
+-          await syncLocalCorpusToVertex(existing.id, vertexDataStoreId).catch(() => null);
+-        }
+-        indexingStatus = corpus.docs.length > 0 ? 'ACTIVE' : 'INDEXING';
+-      } catch {
+-        indexingStatus = 'INDEXING';
++      const corpus = await ingestDriveSourceForAgent({
++        sessionId: sid,
++        agentId: existing.id,
++        driveSourceId: String(nextFolder),
++      });
++      driveIngest = { docs: corpus.docs.length };
++      if (corpus.docs.length === 0) {
++        throw new Error('[drive_rag_ingest] Drive에서 추출 가능한 문서가 없습니다.');
++      }
++      if (!vertexDataStoreId) {
++        throw new Error('[vertex_import] vertexDataStoreId missing');
+       }
++      const sync = await syncLocalCorpusToVertex(existing.id, vertexDataStoreId);
++      if (sync.imported <= 0) {
++        throw new Error(`[vertex_import] ${sync.message || 'imported 0 documents'}`);
++      }
++      indexingStatus = 'ACTIVE';
++      serverLog('info', 'update', 'Drive re-ingest ok', {
++        agentId: existing.id,
++        docs: corpus.docs.length,
++        imported: sync.imported,
++      });
+     } else if (hasLocalFiles) {
+-      try {
+-        const corpus = await ingestLocalUploadsForAgent({
+-          agentId: existing.id,
+-          files: localFileList,
+-          append: true,
+-        });
+-        driveIngest = {
+-          docs: corpus.docs.length,
+-          message: corpus.skipped?.length
+-            ? `skipped: ${corpus.skipped.slice(0, 3).join('; ')}`
+-            : undefined,
+-        };
+-        if (vertexDataStoreId && corpus.docs.length > 0) {
+-          await syncLocalCorpusToVertex(existing.id, vertexDataStoreId).catch(() => null);
+-        }
+-        indexingStatus = corpus.docs.length > 0 ? 'ACTIVE' : 'INDEXING';
+-      } catch {
+-        indexingStatus = 'INDEXING';
++      const corpus = await ingestLocalUploadsForAgent({
++        agentId: existing.id,
++        files: localFileList,
++        append: true,
++      });
++      driveIngest = {
++        docs: corpus.docs.length,
++        message: corpus.skipped?.length
++          ? `skipped: ${corpus.skipped.slice(0, 3).join('; ')}`
++          : undefined,
++      };
++      if (corpus.docs.length === 0) {
++        throw new Error(
++          `[local_upload_ingest] ${corpus.skipped?.join(' · ') || 'No text extracted from uploads'}`
++        );
++      }
++      if (!vertexDataStoreId) {
++        throw new Error('[vertex_import] vertexDataStoreId missing');
+       }
++      const sync = await syncLocalCorpusToVertex(existing.id, vertexDataStoreId);
++      if (sync.imported <= 0) {
++        throw new Error(`[vertex_import] ${sync.message || 'imported 0 documents'}`);
++      }
++      indexingStatus = 'ACTIVE';
++      serverLog('info', 'update', 'Local upload ingest ok', {
++        agentId: existing.id,
++        docs: corpus.docs.length,
++        imported: sync.imported,
++      });
+     }
+ 
+     const updated: AgentRecord = {
+@@ -1120,9 +1178,12 @@ app.patch('/api/agents/:id', requireGoogleSession, async (req, res) => {
+     const listing = await registerAgentOnPayShCatalog(updated, {
+       baseUrl: runtimeBase,
+       description,
++      requireRemote: !!config.catalogSiteUrl,
+     });
+     const payShCatalog = enrichCatalogListing(listing, publicBaseFromReq(req));
+ 
++    serverLog('info', 'update', `Agent update succeeded ${updated.id}`);
++
+     res.json({
+       status: 'success',
+       agent: updated,
+@@ -1134,6 +1195,7 @@ app.patch('/api/agents/:id', requireGoogleSession, async (req, res) => {
+       message: 'Agent updated (same id/vault; catalog metadata synced)',
+     });
+   } catch (err: any) {
++    serverLog('error', 'update', `Agent update failed: ${err?.message || err}`);
+     res.status(500).json({ status: 'error', message: err.message });
+   }
+ });
+diff --git a/server/dev-log.ts b/server/dev-log.ts
+new file mode 100644
+index 0000000..280d68f
+--- /dev/null
++++ b/server/dev-log.ts
+@@ -0,0 +1,177 @@
++/**
++ * In-process developer log ring buffer.
++ * Captures structured serverLog() calls + console.* for the Dev Logs UI.
++ */
++
++import fs from 'fs';
++import { dataFile, ensureDataDir } from './data-paths.js';
++
++export type DevLogLevel = 'debug' | 'info' | 'warn' | 'error';
++
++export type DevLogEntry = {
++  id: string;
++  ts: string;
++  level: DevLogLevel;
++  tag: string;
++  message: string;
++  meta?: unknown;
++};
++
++const MAX = Math.max(200, Number(process.env.DEV_LOG_BUFFER_SIZE || 2500) || 2500);
++const buffer: DevLogEntry[] = [];
++let seq = 0;
++let installed = false;
++
++const original = {
++  log: console.log.bind(console),
++  info: console.info.bind(console),
++  warn: console.warn.bind(console),
++  error: console.error.bind(console),
++  debug: (console.debug || console.log).bind(console),
++};
++
++function persistBestEffort() {
++  try {
++    ensureDataDir();
++    const file = dataFile('dev-logs.json');
++    fs.writeFileSync(file, JSON.stringify(buffer.slice(-500), null, 0), 'utf8');
++  } catch {
++    /* ignore */
++  }
++}
++
++function pushEntry(entry: DevLogEntry) {
++  buffer.push(entry);
++  while (buffer.length > MAX) buffer.shift();
++  if (buffer.length % 25 === 0) persistBestEffort();
++}
++
++function parseConsoleArgs(args: unknown[]): { tag: string; message: string; meta?: unknown } {
++  if (!args.length) return { tag: 'console', message: '' };
++  const first = args[0];
++  if (typeof first === 'string') {
++    const m = first.match(/^\[([^\]]+)\]\s*(.*)$/);
++    if (m) {
++      return {
++        tag: m[1],
++        message: m[2] || first,
++        meta: args.length > 1 ? (args.length === 2 ? args[1] : args.slice(1)) : undefined,
++      };
++    }
++    return {
++      tag: 'console',
++      message: first,
++      meta: args.length > 1 ? (args.length === 2 ? args[1] : args.slice(1)) : undefined,
++    };
++  }
++  try {
++    return { tag: 'console', message: JSON.stringify(first), meta: args.slice(1) };
++  } catch {
++    return { tag: 'console', message: String(first) };
++  }
++}
++
++export function serverLog(
++  level: DevLogLevel,
++  tag: string,
++  message: string,
++  meta?: unknown
++): DevLogEntry {
++  const entry: DevLogEntry = {
++    id: `log_${Date.now().toString(36)}_${(++seq).toString(36)}`,
++    ts: new Date().toISOString(),
++    level,
++    tag,
++    message,
++    meta,
++  };
++  pushEntry(entry);
++  const line = `[${tag}] ${message}`;
++  const printer =
++    level === 'error'
++      ? original.error
++      : level === 'warn'
++        ? original.warn
++        : level === 'debug'
++          ? original.debug
++          : original.info;
++  if (meta !== undefined) printer(line, meta);
++  else printer(line);
++  return entry;
++}
++
++/** Hook console.* so existing warn/error paths show up in Dev Logs. */
++export function installConsoleCapture() {
++  if (installed) return;
++  installed = true;
++
++  const wrap =
++    (level: DevLogLevel, fn: (...a: unknown[]) => void) =>
++    (...args: unknown[]) => {
++      try {
++        const parsed = parseConsoleArgs(args);
++        pushEntry({
++          id: `log_${Date.now().toString(36)}_${(++seq).toString(36)}`,
++          ts: new Date().toISOString(),
++          level,
++          tag: parsed.tag,
++          message: parsed.message,
++          meta: parsed.meta,
++        });
++      } catch {
++        /* never break console */
++      }
++      fn(...args);
++    };
++
++  console.log = wrap('info', original.log) as typeof console.log;
++  console.info = wrap('info', original.info) as typeof console.info;
++  console.warn = wrap('warn', original.warn) as typeof console.warn;
++  console.error = wrap('error', original.error) as typeof console.error;
++  console.debug = wrap('debug', original.debug) as typeof console.debug;
++
++  serverLog('info', 'dev-log', `Console capture installed (buffer=${MAX})`);
++}
++
++export function listDevLogs(opts?: {
++  level?: DevLogLevel | 'all';
++  tag?: string;
++  q?: string;
++  limit?: number;
++}): DevLogEntry[] {
++  let rows = buffer.slice();
++  if (opts?.level && opts.level !== 'all') {
++    rows = rows.filter((r) => r.level === opts.level);
++  }
++  if (opts?.tag) {
++    const t = opts.tag.toLowerCase();
++    rows = rows.filter((r) => r.tag.toLowerCase().includes(t));
++  }
++  if (opts?.q) {
++    const q = opts.q.toLowerCase();
++    rows = rows.filter(
++      (r) =>
++        r.message.toLowerCase().includes(q) ||
++        r.tag.toLowerCase().includes(q) ||
++        JSON.stringify(r.meta ?? '')
++          .toLowerCase()
++          .includes(q)
++    );
++  }
++  const limit = Math.min(Math.max(opts?.limit || 300, 1), MAX);
++  return rows.slice(-limit).reverse();
++}
++
++export function clearDevLogs(): number {
++  const n = buffer.length;
++  buffer.length = 0;
++  persistBestEffort();
++  serverLog('info', 'dev-log', 'Developer log buffer cleared');
++  return n;
++}
++
++export function devLogStats() {
++  const byLevel: Record<string, number> = {};
++  for (const r of buffer) byLevel[r.level] = (byLevel[r.level] || 0) + 1;
++  return { total: buffer.length, max: MAX, byLevel };
++}
+diff --git a/server/invoke-evidence.ts b/server/invoke-evidence.ts
+new file mode 100644
+index 0000000..95f7016
+--- /dev/null
++++ b/server/invoke-evidence.ts
+@@ -0,0 +1,189 @@
++/**
++ * Persisted invoke evidence for developer dashboard.
++ * Captures citations / tools / datastore / website sources so agents are not black boxes.
++ */
++
++import fs from 'fs';
++import { dataFile, ensureDataDir } from './data-paths.js';
++import { serverLog } from './dev-log.js';
++
++export type CitationEvidence = {
++  title?: string;
++  uri?: string;
++  snippet?: string;
++  sourceType?: string;
++};
++
++export type InvokeEvidence = {
++  id: string;
++  ts: string;
++  agentId: string;
++  agentName?: string;
++  prompt: string;
++  answer: string;
++  confidence?: number;
++  citations: CitationEvidence[];
++  toolsUsed: string[];
++  ragMode?: string;
++  generation?: string;
++  engineId?: string | null;
++  dataStoreId?: string | null;
++  websiteUri?: string;
++  dataSourceType?: string;
++  aiAppType?: string;
++  gcsUri?: string;
++  googleDriveFolderId?: string;
++  relatedQuestions?: string[];
++  retrievalError?: string;
++  a2a?: unknown;
++  studioOwnerTest?: boolean;
++  referencedHosts: string[];
++  referencedUrls: string[];
++};
++
++const MAX = Math.max(100, Number(process.env.INVOKE_EVIDENCE_BUFFER_SIZE || 500) || 500);
++const store: InvokeEvidence[] = [];
++let seq = 0;
++let hydrated = false;
++
++function evidenceFile() {
++  return dataFile('invoke-evidence.json');
++}
++
++function hydrate() {
++  if (hydrated) return;
++  hydrated = true;
++  try {
++    const file = evidenceFile();
++    if (!fs.existsSync(file)) return;
++    const rows = JSON.parse(fs.readFileSync(file, 'utf8')) as InvokeEvidence[];
++    if (Array.isArray(rows)) {
++      store.push(...rows.slice(-MAX));
++    }
++  } catch (err: any) {
++    serverLog('warn', 'evidence', `hydrate failed: ${err?.message || err}`);
++  }
++}
++
++function persist() {
++  try {
++    ensureDataDir();
++    fs.writeFileSync(evidenceFile(), JSON.stringify(store.slice(-MAX), null, 0), 'utf8');
++  } catch (err: any) {
++    serverLog('warn', 'evidence', `persist failed: ${err?.message || err}`);
++  }
++}
++
++function extractUrls(citations: CitationEvidence[], answer: string): {
++  referencedUrls: string[];
++  referencedHosts: string[];
++} {
++  const urls = new Set<string>();
++  for (const c of citations || []) {
++    if (c.uri && /^https?:\/\//i.test(c.uri)) urls.add(c.uri);
++  }
++  const fromAnswer = answer?.match(/https?:\/\/[^\s)\]>'"]+/gi) || [];
++  for (const u of fromAnswer) urls.add(u.replace(/[.,;]+$/, ''));
++
++  const hosts = new Set<string>();
++  for (const u of urls) {
++    try {
++      hosts.add(new URL(u).hostname);
++    } catch {
++      /* ignore */
++    }
++  }
++  return {
++    referencedUrls: [...urls].slice(0, 40),
++    referencedHosts: [...hosts].slice(0, 40),
++  };
++}
++
++export function recordInvokeEvidence(
++  partial: Omit<InvokeEvidence, 'id' | 'ts' | 'referencedHosts' | 'referencedUrls'> & {
++    referencedHosts?: string[];
++    referencedUrls?: string[];
++  }
++): InvokeEvidence {
++  hydrate();
++  const refs = extractUrls(partial.citations || [], partial.answer || '');
++  const entry: InvokeEvidence = {
++    ...partial,
++    id: `ev_${Date.now().toString(36)}_${(++seq).toString(36)}`,
++    ts: new Date().toISOString(),
++    citations: partial.citations || [],
++    toolsUsed: partial.toolsUsed || [],
++    referencedHosts: refs.referencedHosts,
++    referencedUrls: refs.referencedUrls,
++  };
++  store.push(entry);
++  while (store.length > MAX) store.shift();
++  persist();
++  serverLog('info', 'evidence', `Recorded invoke evidence ${entry.id}`, {
++    agentId: entry.agentId,
++    citations: entry.citations.length,
++    tools: entry.toolsUsed,
++    hosts: entry.referencedHosts,
++    ragMode: entry.ragMode,
++  });
++  return entry;
++}
++
++export function listInvokeEvidence(opts?: {
++  agentId?: string;
++  q?: string;
++  limit?: number;
++}): InvokeEvidence[] {
++  hydrate();
++  let rows = store.slice();
++  if (opts?.agentId) rows = rows.filter((r) => r.agentId === opts.agentId);
++  if (opts?.q) {
++    const q = opts.q.toLowerCase();
++    rows = rows.filter(
++      (r) =>
++        r.prompt.toLowerCase().includes(q) ||
++        r.answer.toLowerCase().includes(q) ||
++        r.agentId.toLowerCase().includes(q) ||
++        r.referencedHosts.some((h) => h.toLowerCase().includes(q)) ||
++        r.citations.some(
++          (c) =>
++            (c.title || '').toLowerCase().includes(q) ||
++            (c.uri || '').toLowerCase().includes(q) ||
++            (c.snippet || '').toLowerCase().includes(q)
++        )
++    );
++  }
++  const limit = Math.min(Math.max(opts?.limit || 100, 1), MAX);
++  return rows.slice(-limit).reverse();
++}
++
++export function getInvokeEvidence(id: string): InvokeEvidence | undefined {
++  hydrate();
++  return store.find((r) => r.id === id);
++}
++
++export function clearInvokeEvidence(agentId?: string): number {
++  hydrate();
++  let n = 0;
++  if (!agentId) {
++    n = store.length;
++    store.length = 0;
++  } else {
++    for (let i = store.length - 1; i >= 0; i--) {
++      if (store[i].agentId === agentId) {
++        store.splice(i, 1);
++        n += 1;
++      }
++    }
++  }
++  persist();
++  serverLog('info', 'evidence', `Cleared ${n} evidence row(s)`, { agentId: agentId || 'all' });
++  return n;
++}
++
++export function evidenceStats() {
++  hydrate();
++  const byAgent: Record<string, number> = {};
++  for (const r of store) byAgent[r.agentId] = (byAgent[r.agentId] || 0) + 1;
++  return { total: store.length, max: MAX, byAgent };
++}
+diff --git a/server/invoke-handler.ts b/server/invoke-handler.ts
+index 24607bb..9c3f4bf 100644
+--- a/server/invoke-handler.ts
++++ b/server/invoke-handler.ts
+@@ -10,6 +10,8 @@ import {
+   getCatalogEntry,
+   registerAgentOnPayShCatalog,
+ } from './paysh-catalog.js';
++import { recordInvokeEvidence } from './invoke-evidence.js';
++import { serverLog } from './dev-log.js';
+ 
+ export type InvokeInput = {
+   agentId: string;
+@@ -106,7 +108,45 @@ export async function runAgentInvoke(
+   });
+   await bumpInvoke(input.agentId);
+ 
+-  const body: InvokeSuccess = {
++  const generation =
++    result.ragMode === 'ai_application' ? 'ai_application_answer' : 'vertex_gemini_rag';
++
++  const evidence = recordInvokeEvidence({
++    agentId: agent.id,
++    agentName: agent.agentName || agent.customRole || agent.role,
++    prompt: input.prompt,
++    answer: result.answer,
++    confidence: result.confidence,
++    citations: result.citations || [],
++    toolsUsed: result.toolsUsed || [],
++    ragMode: result.ragMode,
++    generation,
++    engineId: agent.vertexEngineId || null,
++    dataStoreId: agent.vertexDataStoreId || null,
++    websiteUri: agent.websiteUri,
++    dataSourceType: agent.dataSourceType,
++    aiAppType: agent.aiAppType,
++    gcsUri: agent.gcsUri,
++    googleDriveFolderId: agent.googleDriveFolderId,
++    relatedQuestions: result.relatedQuestions || [],
++    retrievalError: (result as any).retrievalError,
++    a2a: {
++      catalogUsed: result.catalogUsed,
++      planningNote: result.planningNote,
++      peerHops: result.peerHops,
++      spendTier: result.spendTier,
++    },
++    studioOwnerTest: studio,
++  });
++
++  serverLog('info', 'invoke', `agent=${agent.id} mode=${result.ragMode}`, {
++    evidenceId: evidence.id,
++    citations: evidence.citations.length,
++    hosts: evidence.referencedHosts,
++    tools: evidence.toolsUsed,
++  });
++
++  const body: InvokeSuccess & { evidenceId?: string; referencedHosts?: string[]; referencedUrls?: string[] } = {
+     status: 'success',
+     answer: result.answer,
+     data: result.answer,
+@@ -118,13 +158,15 @@ export async function runAgentInvoke(
+     feeUsdc: studio ? 0 : feeAmount,
+     paywallSkipped: studio || paymentLogs.some((l) => /paywall skipped|gateway settled/i.test(l)),
+     payShCatalogId: listing?.catalogId,
+-    generation:
+-      result.ragMode === 'ai_application' ? 'ai_application_answer' : 'vertex_gemini_rag',
++    generation,
+     engineId: agent.vertexEngineId || null,
+     dataStoreId: agent.vertexDataStoreId || null,
+     session: result.session || null,
+     relatedQuestions: result.relatedQuestions || [],
+     toolsUsed: result.toolsUsed || [],
++    evidenceId: evidence.id,
++    referencedHosts: evidence.referencedHosts,
++    referencedUrls: evidence.referencedUrls,
+     a2a: {
+       catalogUsed: result.catalogUsed,
+       planningNote: result.planningNote,
+diff --git a/server/paysh-catalog.ts b/server/paysh-catalog.ts
+index 0d03a64..989411b 100644
+--- a/server/paysh-catalog.ts
++++ b/server/paysh-catalog.ts
+@@ -308,16 +308,29 @@ export async function registerAgentOnPayShCatalog(
+     baseUrl?: string;
+     description?: string;
+     publishMode?: string;
++    /** When true, remote publish failure throws (agent create/update hard-fail). */
++    requireRemote?: boolean;
+   }
+ ): Promise<PayShCatalogEntry> {
+   const entry = buildLocalEntry(agent, opts);
++  const site = catalogSite();
+   try {
++    if (!site && opts?.requireRemote) {
++      throw new Error('CATALOG_SITE_URL / catalog site not configured — cannot publish remotely');
++    }
++    if (!site) {
++      catalog[agent.id] = entry;
++      return entry;
++    }
+     const published = await publishToRemote(entry);
+     catalog[agent.id] = published;
+     lastFetchAt = 0; // invalidate so next list refreshes
+     return published;
+   } catch (err: any) {
+-    console.warn('[catalog-client] publish failed, keeping local mirror', err?.message || err);
++    console.warn('[catalog-client] publish failed', err?.message || err);
++    if (opts?.requireRemote) {
++      throw err instanceof Error ? err : new Error(String(err?.message || err));
++    }
+     catalog[agent.id] = entry;
+     return entry;
+   }
+diff --git a/src/App.tsx b/src/App.tsx
+index 02e3e8f..24ea1cb 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -12,6 +12,8 @@ import AgentsPage from './pages/AgentsPage';
+ import SettlementsPage from './pages/SettlementsPage';
+ import MyPage from './pages/MyPage';
+ import DevAgentLabPage from './pages/DevAgentLabPage';
++import DevEvidencePage from './pages/DevEvidencePage';
++import DevLogsPage from './pages/DevLogsPage';
+ import WalletModal, { type WalletRow } from './components/WalletModal';
+ import CreateAgentProgress, { CREATE_STEPS, EDIT_STEPS } from './components/CreateAgentProgress';
+ import { formatAgentChatMessage } from './lib/formatAgentMessage';
+@@ -1309,6 +1311,10 @@ export default function App() {
+           onBack={() => navigateTab('studio')}
+         />
+       )}
++      {activeTab === 'evidence' && (
++        <DevEvidencePage agents={agents} authFetch={authFetch} />
++      )}
++      {activeTab === 'logs' && <DevLogsPage authFetch={authFetch} />}
+       {activeTab === 'settlements' && (
+         <SettlementsPage settlements={settlements} agents={agents} />
+       )}
+diff --git a/src/AppShell.tsx b/src/AppShell.tsx
+index ed223b6..f277af3 100644
+--- a/src/AppShell.tsx
++++ b/src/AppShell.tsx
+@@ -11,9 +11,10 @@ import {
+   HelpCircle,
+   LogOut,
+   FlaskConical,
++  ScrollText,
+ } from 'lucide-react';
+ 
+-export type AppTab = 'studio' | 'list' | 'settlements' | 'account' | 'lab';
++export type AppTab = 'studio' | 'list' | 'settlements' | 'account' | 'lab' | 'evidence' | 'logs';
+ 
+ type Props = {
+   activeTab: AppTab;
+@@ -33,7 +34,8 @@ type Props = {
+ const NAV: { id: AppTab; label: string; icon: typeof Bot }[] = [
+   { id: 'studio', label: '에이전트 스튜디오', icon: Factory },
+   { id: 'list', label: '내 에이전트 목록', icon: Bot },
+-  { id: 'lab', label: '개발자 테스트', icon: FlaskConical },
++  { id: 'evidence', label: '근거 대시보드', icon: FlaskConical },
++  { id: 'logs', label: '개발자 로그', icon: ScrollText },
+   { id: 'settlements', label: '온체인 정산 내역', icon: Wallet },
+   { id: 'account', label: '마이페이지', icon: Settings },
+ ];
+diff --git a/src/lib/appRoute.ts b/src/lib/appRoute.ts
+index e8919fd..b42d648 100644
+--- a/src/lib/appRoute.ts
++++ b/src/lib/appRoute.ts
+@@ -4,6 +4,8 @@ const TAB_PATHS: Record<AppTab, string> = {
+   studio: '/studio',
+   list: '/agents',
+   lab: '/lab',
++  evidence: '/evidence',
++  logs: '/logs',
+   settlements: '/settlements',
+   account: '/account',
+ };
+diff --git a/src/pages/DevEvidencePage.tsx b/src/pages/DevEvidencePage.tsx
+new file mode 100644
+index 0000000..b133649
+--- /dev/null
++++ b/src/pages/DevEvidencePage.tsx
+@@ -0,0 +1,453 @@
++/**
++ * Developer evidence dashboard — chat + persisted citations / referenced sites.
++ */
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
++import {
++  Bot,
++  ExternalLink,
++  FlaskConical,
++  Loader2,
++  RefreshCw,
++  Send,
++  Shield,
++  Trash2,
++} from 'lucide-react';
++import { Agent, Message } from '../types';
++import { formatAgentChatMessage } from '../lib/formatAgentMessage';
++import ChatMessageBody from '../components/ChatMessageBody';
++
++type Evidence = {
++  id: string;
++  ts: string;
++  agentId: string;
++  agentName?: string;
++  prompt: string;
++  answer: string;
++  confidence?: number;
++  citations: { title?: string; uri?: string; snippet?: string; sourceType?: string }[];
++  toolsUsed: string[];
++  ragMode?: string;
++  generation?: string;
++  engineId?: string | null;
++  dataStoreId?: string | null;
++  websiteUri?: string;
++  dataSourceType?: string;
++  aiAppType?: string;
++  referencedHosts: string[];
++  referencedUrls: string[];
++  relatedQuestions?: string[];
++  retrievalError?: string;
++  a2a?: unknown;
++};
++
++type Props = {
++  agents: Agent[];
++  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
++};
++
++export default function DevEvidencePage({ agents, authFetch }: Props) {
++  const [agentId, setAgentId] = useState(agents[0]?.id || '');
++  const [input, setInput] = useState('');
++  const [busy, setBusy] = useState(false);
++  const [messages, setMessages] = useState<Message[]>([]);
++  const [evidence, setEvidence] = useState<Evidence[]>([]);
++  const [selectedId, setSelectedId] = useState<string | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [q, setQ] = useState('');
++  const scrollRef = useRef<HTMLDivElement>(null);
++
++  const agent = agents.find((a) => a.id === agentId) || null;
++  const selected = useMemo(
++    () => evidence.find((e) => e.id === selectedId) || evidence[0] || null,
++    [evidence, selectedId]
++  );
++
++  const loadEvidence = useCallback(async () => {
++    try {
++      const params = new URLSearchParams({ limit: '80' });
++      if (agentId) params.set('agentId', agentId);
++      if (q.trim()) params.set('q', q.trim());
++      const res = await authFetch(`/api/dev/evidence?${params}`);
++      const data = await res.json();
++      if (!res.ok || data.status !== 'success') {
++        throw new Error(data.message || `HTTP ${res.status}`);
++      }
++      setEvidence(data.evidence || []);
++      if (!selectedId && data.evidence?.[0]?.id) setSelectedId(data.evidence[0].id);
++    } catch (err: any) {
++      setError(err?.message || '근거 로드 실패');
++    }
++  }, [authFetch, agentId, q, selectedId]);
++
++  useEffect(() => {
++    if (!agentId && agents[0]?.id) setAgentId(agents[0].id);
++  }, [agents, agentId]);
++
++  useEffect(() => {
++    void loadEvidence();
++  }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
++
++  useEffect(() => {
++    const el = scrollRef.current;
++    if (el) el.scrollTop = el.scrollHeight;
++  }, [messages, busy]);
++
++  const send = async () => {
++    const prompt = input.trim();
++    if (!prompt || !agent || busy) return;
++    setInput('');
++    setError(null);
++    setBusy(true);
++    const userMsg: Message = {
++      id: `u-${Date.now()}`,
++      sender: 'user',
++      text: prompt,
++      timestamp: new Date().toLocaleTimeString(),
++    };
++    setMessages((prev) => [...prev, userMsg]);
++    try {
++      const res = await authFetch(`/api/agents/${encodeURIComponent(agent.id)}/invoke`, {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          'X-Solvamos-Studio': '1',
++        },
++        body: JSON.stringify({
++          prompt,
++          studioTest: true,
++          enableA2A: false,
++          history: messages
++            .filter((m) => m.sender === 'user' || m.sender === 'agent')
++            .slice(-12)
++            .map((m) => ({
++              role: m.sender === 'agent' ? 'model' : 'user',
++              text: m.text,
++            })),
++        }),
++      });
++      const data = await res.json();
++      if (!res.ok || data.status !== 'success') {
++        throw new Error(data.message || `HTTP ${res.status}`);
++      }
++      const agentMsg: Message = {
++        id: `a-${Date.now()}`,
++        sender: 'agent',
++        text: formatAgentChatMessage(String(data.data ?? data.answer ?? '')),
++        timestamp: new Date().toLocaleTimeString(),
++        confidence: data.confidence,
++        toolsUsed: data.toolsUsed,
++      };
++      setMessages((prev) => [...prev, agentMsg]);
++      await loadEvidence();
++      if (data.evidenceId) setSelectedId(data.evidenceId);
++    } catch (err: any) {
++      setError(err?.message || 'invoke 실패');
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const clearEvidence = async () => {
++    if (!window.confirm('이 에이전트의 근거 기록을 삭제할까요?')) return;
++    await authFetch(`/api/dev/evidence?agentId=${encodeURIComponent(agentId)}`, {
++      method: 'DELETE',
++    });
++    setSelectedId(null);
++    await loadEvidence();
++  };
++
++  return (
++    <div className="flex flex-col gap-4">
++      <div className="flex flex-wrap items-end justify-between gap-3">
++        <div>
++          <h2 className="text-3xl font-semibold text-on-surface mb-1 flex items-center gap-2">
++            <FlaskConical className="w-7 h-7 text-solana-green" />
++            근거 대시보드
++          </h2>
++          <p className="text-sm text-on-surface-variant">
++            에이전트가 참고한 citation·URL·호스트·툴을 남깁니다. 블랙박스 응답의 증거를 확인하세요.
++          </p>
++        </div>
++        <div className="flex flex-wrap gap-2 items-center">
++          <select
++            value={agentId}
++            onChange={(e) => {
++              setAgentId(e.target.value);
++              setMessages([]);
++              setSelectedId(null);
++            }}
++            className="bg-surface-container-high border border-outline-variant/30 rounded-md py-2 px-3 text-sm min-w-[220px]"
++          >
++            {agents.length === 0 && <option value="">에이전트 없음</option>}
++            {agents.map((a) => (
++              <option key={a.id} value={a.id}>
++                {a.agentName || a.customRole || a.role} · {a.id.slice(0, 16)}
++              </option>
++            ))}
++          </select>
++          <button
++            type="button"
++            onClick={() => void loadEvidence()}
++            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-high text-sm"
++          >
++            <RefreshCw className="w-4 h-4" />
++            근거 새로고침
++          </button>
++          <button
++            type="button"
++            onClick={() => void clearEvidence()}
++            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/30 text-red-400 text-sm"
++          >
++            <Trash2 className="w-4 h-4" />
++            근거 삭제
++          </button>
++        </div>
++      </div>
++
++      {agent && (
++        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
++          <MetaChip label="dataSource" value={agent.dataSourceType || '—'} />
++          <MetaChip label="website" value={agent.websiteUri || '—'} />
++          <MetaChip label="engine" value={agent.vertexEngineId || '—'} />
++          <MetaChip label="datastore" value={agent.vertexDataStoreId || '—'} />
++        </div>
++      )}
++
++      {error && (
++        <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
++          {error}
++        </div>
++      )}
++
++      <div className="grid lg:grid-cols-2 gap-4 min-h-[60vh]">
++        {/* Chat */}
++        <section className="glass-panel rounded-xl flex flex-col overflow-hidden border border-outline-variant/15 min-h-[520px]">
++          <div className="px-4 py-3 border-b border-outline-variant/15 flex items-center gap-2">
++            <Bot className="w-4 h-4 text-google-blue" />
++            <span className="text-sm font-semibold">개발자 테스트 채팅</span>
++            <span className="text-[10px] text-on-surface-variant ml-auto">studioTest · paywall skip</span>
++          </div>
++          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
++            {messages.length === 0 && (
++              <p className="text-sm text-on-surface-variant text-center py-12">
++                질문을 보내면 응답과 함께 근거(evidence)가 오른쪽에 쌓입니다.
++              </p>
++            )}
++            {messages.map((m) => (
++              <div
++                key={m.id}
++                className={
++                  m.sender === 'user'
++                    ? 'ml-8 rounded-xl bg-google-blue/15 px-3 py-2 text-sm'
++                    : 'mr-8 rounded-xl bg-surface-container-high px-3 py-2 text-sm'
++                }
++              >
++                <ChatMessageBody text={m.text} sender={m.sender} />
++                {m.toolsUsed?.length ? (
++                  <p className="mt-1 text-[10px] text-on-surface-variant font-mono">
++                    tools: {m.toolsUsed.join(', ')}
++                  </p>
++                ) : null}
++              </div>
++            ))}
++            {busy && (
++              <div className="flex items-center gap-2 text-sm text-on-surface-variant">
++                <Loader2 className="w-4 h-4 animate-spin" /> 생성 중…
++              </div>
++            )}
++          </div>
++          <form
++            className="p-3 border-t border-outline-variant/15 flex gap-2"
++            onSubmit={(e) => {
++              e.preventDefault();
++              void send();
++            }}
++          >
++            <input
++              value={input}
++              onChange={(e) => setInput(e.target.value)}
++              placeholder="에이전트에게 물어보기…"
++              className="flex-1 bg-surface-container-lowest border border-outline-variant/30 rounded-lg px-3 py-2 text-sm"
++              disabled={!agent || busy}
++            />
++            <button
++              type="submit"
++              disabled={!agent || busy || !input.trim()}
++              className="px-3 py-2 rounded-lg bg-google-blue text-white disabled:opacity-40"
++            >
++              <Send className="w-4 h-4" />
++            </button>
++          </form>
++        </section>
++
++        {/* Evidence */}
++        <section className="glass-panel rounded-xl flex flex-col overflow-hidden border border-outline-variant/15 min-h-[520px]">
++          <div className="px-4 py-3 border-b border-outline-variant/15 flex items-center gap-2">
++            <Shield className="w-4 h-4 text-solana-green" />
++            <span className="text-sm font-semibold">근거 / 참고 사이트</span>
++            <input
++              value={q}
++              onChange={(e) => setQ(e.target.value)}
++              onKeyDown={(e) => {
++                if (e.key === 'Enter') void loadEvidence();
++              }}
++              placeholder="근거 검색"
++              className="ml-auto bg-surface-container-high border border-outline-variant/30 rounded-md px-2 py-1 text-xs w-36"
++            />
++          </div>
++          <div className="grid grid-cols-5 flex-1 min-h-0">
++            <div className="col-span-2 border-r border-outline-variant/15 overflow-y-auto max-h-[560px]">
++              {evidence.length === 0 && (
++                <p className="p-4 text-xs text-on-surface-variant">아직 기록된 근거가 없습니다.</p>
++              )}
++              {evidence.map((ev) => (
++                <button
++                  key={ev.id}
++                  type="button"
++                  onClick={() => setSelectedId(ev.id)}
++                  className={
++                    selected?.id === ev.id
++                      ? 'w-full text-left px-3 py-3 bg-secondary-container/15 border-l-2 border-secondary'
++                      : 'w-full text-left px-3 py-3 hover:bg-surface-container/50 border-l-2 border-transparent'
++                  }
++                >
++                  <p className="text-[10px] text-outline font-mono">
++                    {new Date(ev.ts).toLocaleString()}
++                  </p>
++                  <p className="text-xs text-on-surface line-clamp-2 mt-0.5">{ev.prompt}</p>
++                  <p className="text-[10px] text-on-surface-variant mt-1">
++                    cites {ev.citations?.length || 0} · hosts {ev.referencedHosts?.length || 0}
++                  </p>
++                </button>
++              ))}
++            </div>
++            <div className="col-span-3 overflow-y-auto max-h-[560px] p-4 space-y-4 text-sm">
++              {!selected && (
++                <p className="text-on-surface-variant text-xs">왼쪽에서 근거 항목을 선택하세요.</p>
++              )}
++              {selected && (
++                <>
++                  <div>
++                    <p className="text-[10px] uppercase tracking-wider text-outline mb-1">Prompt</p>
++                    <p className="text-on-surface">{selected.prompt}</p>
++                  </div>
++                  <div>
++                    <p className="text-[10px] uppercase tracking-wider text-outline mb-1">Answer</p>
++                    <p className="text-on-surface-variant whitespace-pre-wrap text-xs leading-relaxed">
++                      {selected.answer.slice(0, 1200)}
++                      {selected.answer.length > 1200 ? '…' : ''}
++                    </p>
++                  </div>
++                  <div className="flex flex-wrap gap-2 text-[10px] font-mono">
++                    <span className="px-2 py-1 rounded bg-surface-container">mode:{selected.ragMode}</span>
++                    <span className="px-2 py-1 rounded bg-surface-container">
++                      conf:{selected.confidence ?? '—'}
++                    </span>
++                    {(selected.toolsUsed || []).map((t) => (
++                      <span key={t} className="px-2 py-1 rounded bg-google-blue/15 text-google-blue">
++                        {t}
++                      </span>
++                    ))}
++                  </div>
++                  <div>
++                    <p className="text-[10px] uppercase tracking-wider text-outline mb-2">
++                      Referenced hosts
++                    </p>
++                    {selected.referencedHosts?.length ? (
++                      <ul className="flex flex-wrap gap-1.5">
++                        {selected.referencedHosts.map((h) => (
++                          <li
++                            key={h}
++                            className="px-2 py-1 rounded-md bg-solana-green/10 text-solana-green text-xs font-mono"
++                          >
++                            {h}
++                          </li>
++                        ))}
++                      </ul>
++                    ) : (
++                      <p className="text-xs text-on-surface-variant">호스트 없음</p>
++                    )}
++                  </div>
++                  <div>
++                    <p className="text-[10px] uppercase tracking-wider text-outline mb-2">Citations</p>
++                    <ul className="space-y-2">
++                      {(selected.citations || []).length === 0 && (
++                        <li className="text-xs text-on-surface-variant">citation 없음</li>
++                      )}
++                      {(selected.citations || []).map((c, i) => (
++                        <li
++                          key={`${c.uri || c.title || i}`}
++                          className="rounded-lg border border-outline-variant/20 p-3 bg-surface-container-lowest/50"
++                        >
++                          <p className="text-xs font-semibold text-on-surface">
++                            {c.title || c.uri || `citation ${i + 1}`}
++                          </p>
++                          {c.uri && (
++                            <a
++                              href={c.uri}
++                              target="_blank"
++                              rel="noopener noreferrer"
++                              className="inline-flex items-center gap-1 text-[11px] text-google-blue break-all mt-1"
++                            >
++                              {c.uri} <ExternalLink className="w-3 h-3 shrink-0" />
++                            </a>
++                          )}
++                          {c.snippet && (
++                            <p className="mt-1 text-[11px] text-on-surface-variant line-clamp-4">
++                              {c.snippet}
++                            </p>
++                          )}
++                        </li>
++                      ))}
++                    </ul>
++                  </div>
++                  {selected.referencedUrls?.length ? (
++                    <div>
++                      <p className="text-[10px] uppercase tracking-wider text-outline mb-2">URLs</p>
++                      <ul className="space-y-1">
++                        {selected.referencedUrls.map((u) => (
++                          <li key={u}>
++                            <a
++                              href={u}
++                              target="_blank"
++                              rel="noopener noreferrer"
++                              className="text-[11px] text-google-blue break-all"
++                            >
++                              {u}
++                            </a>
++                          </li>
++                        ))}
++                      </ul>
++                    </div>
++                  ) : null}
++                  {selected.retrievalError && (
++                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
++                      retrievalError: {selected.retrievalError}
++                    </div>
++                  )}
++                  <details className="text-[10px] text-on-surface-variant">
++                    <summary className="cursor-pointer">raw JSON</summary>
++                    <pre className="mt-2 overflow-x-auto max-h-48">
++                      {JSON.stringify(selected, null, 2)}
++                    </pre>
++                  </details>
++                </>
++              )}
++            </div>
++          </div>
++        </section>
++      </div>
++    </div>
++  );
++}
++
++function MetaChip({ label, value }: { label: string; value: string }) {
++  return (
++    <div className="rounded-lg border border-outline-variant/15 bg-surface-container px-3 py-2">
++      <p className="text-[10px] uppercase tracking-wider text-outline">{label}</p>
++      <p className="font-mono text-[11px] text-on-surface truncate" title={value}>
++        {value}
++      </p>
++    </div>
++  );
++}
+diff --git a/src/pages/DevLogsPage.tsx b/src/pages/DevLogsPage.tsx
+new file mode 100644
+index 0000000..62397ac
+--- /dev/null
++++ b/src/pages/DevLogsPage.tsx
+@@ -0,0 +1,182 @@
++/**
++ * Developer server logs — ring buffer from /api/dev/logs
++ */
++import { useCallback, useEffect, useState } from 'react';
++import { RefreshCw, Trash2, ScrollText, Filter } from 'lucide-react';
++
++type DevLogEntry = {
++  id: string;
++  ts: string;
++  level: 'debug' | 'info' | 'warn' | 'error';
++  tag: string;
++  message: string;
++  meta?: unknown;
++};
++
++type Props = {
++  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
++};
++
++const LEVEL_STYLE: Record<string, string> = {
++  error: 'text-red-400 border-red-500/30 bg-red-500/10',
++  warn: 'text-amber-300 border-amber-500/30 bg-amber-500/10',
++  info: 'text-sky-300 border-sky-500/20 bg-sky-500/5',
++  debug: 'text-on-surface-variant border-outline-variant/20 bg-surface-container',
++};
++
++export default function DevLogsPage({ authFetch }: Props) {
++  const [logs, setLogs] = useState<DevLogEntry[]>([]);
++  const [stats, setStats] = useState<{ total: number; max: number; byLevel: Record<string, number> } | null>(
++    null
++  );
++  const [level, setLevel] = useState<string>('all');
++  const [tag, setTag] = useState('');
++  const [q, setQ] = useState('');
++  const [auto, setAuto] = useState(true);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  const load = useCallback(async () => {
++    setBusy(true);
++    setError(null);
++    try {
++      const params = new URLSearchParams({ limit: '400' });
++      if (level !== 'all') params.set('level', level);
++      if (tag.trim()) params.set('tag', tag.trim());
++      if (q.trim()) params.set('q', q.trim());
++      const res = await authFetch(`/api/dev/logs?${params}`);
++      const data = await res.json();
++      if (!res.ok || data.status !== 'success') {
++        throw new Error(data.message || `HTTP ${res.status}`);
++      }
++      setLogs(data.logs || []);
++      setStats(data.stats || null);
++    } catch (err: any) {
++      setError(err?.message || '로그 로드 실패');
++    } finally {
++      setBusy(false);
++    }
++  }, [authFetch, level, tag, q]);
++
++  useEffect(() => {
++    void load();
++  }, [load]);
++
++  useEffect(() => {
++    if (!auto) return;
++    const t = window.setInterval(() => void load(), 4000);
++    return () => window.clearInterval(t);
++  }, [auto, load]);
++
++  const clear = async () => {
++    if (!window.confirm('개발자 로그 버퍼를 비울까요?')) return;
++    await authFetch('/api/dev/logs', { method: 'DELETE' });
++    await load();
++  };
++
++  return (
++    <div className="flex flex-col gap-4 min-h-[70vh]">
++      <div className="flex flex-wrap items-end justify-between gap-3">
++        <div>
++          <h2 className="text-3xl font-semibold text-on-surface mb-1 flex items-center gap-2">
++            <ScrollText className="w-7 h-7 text-google-blue" />
++            개발자 서버 로그
++          </h2>
++          <p className="text-sm text-on-surface-variant">
++            에이전트 생성/수정/invoke·GCP 오류를 실시간으로 확인합니다.
++            {stats ? ` · 버퍼 ${stats.total}/${stats.max}` : ''}
++          </p>
++        </div>
++        <div className="flex flex-wrap gap-2">
++          <label className="flex items-center gap-2 text-xs text-on-surface-variant px-2">
++            <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
++            자동 새로고침
++          </label>
++          <button
++            type="button"
++            onClick={() => void load()}
++            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-high text-sm"
++          >
++            <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
++            새로고침
++          </button>
++          <button
++            type="button"
++            onClick={() => void clear()}
++            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/30 text-red-400 text-sm"
++          >
++            <Trash2 className="w-4 h-4" />
++            비우기
++          </button>
++        </div>
++      </div>
++
++      <div className="flex flex-wrap gap-2 items-center bg-surface-container p-3 rounded-xl border border-outline-variant/15">
++        <Filter className="w-4 h-4 text-on-surface-variant" />
++        <select
++          value={level}
++          onChange={(e) => setLevel(e.target.value)}
++          className="bg-surface-container-high border border-outline-variant/30 rounded-md py-1.5 px-3 text-sm"
++        >
++          <option value="all">All levels</option>
++          <option value="error">error</option>
++          <option value="warn">warn</option>
++          <option value="info">info</option>
++          <option value="debug">debug</option>
++        </select>
++        <input
++          value={tag}
++          onChange={(e) => setTag(e.target.value)}
++          placeholder="tag (create, invoke…)"
++          className="bg-surface-container-high border border-outline-variant/30 rounded-md py-1.5 px-3 text-sm w-40"
++        />
++        <input
++          value={q}
++          onChange={(e) => setQ(e.target.value)}
++          placeholder="검색어"
++          className="bg-surface-container-high border border-outline-variant/30 rounded-md py-1.5 px-3 text-sm flex-1 min-w-[160px]"
++        />
++        {stats?.byLevel && (
++          <span className="text-[11px] text-on-surface-variant font-mono">
++            e:{stats.byLevel.error || 0} w:{stats.byLevel.warn || 0} i:{stats.byLevel.info || 0}
++          </span>
++        )}
++      </div>
++
++      {error && (
++        <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
++          {error}
++        </div>
++      )}
++
++      <div className="flex-1 rounded-xl border border-outline-variant/15 bg-surface-container-lowest/40 overflow-hidden">
++        <div className="max-h-[65vh] overflow-y-auto divide-y divide-outline-variant/10 font-mono text-xs">
++          {logs.length === 0 && (
++            <p className="p-8 text-center text-on-surface-variant">표시할 로그가 없습니다.</p>
++          )}
++          {logs.map((log) => (
++            <div key={log.id} className="px-4 py-3 hover:bg-surface-container/40">
++              <div className="flex flex-wrap items-center gap-2 mb-1">
++                <span className="text-outline">{new Date(log.ts).toLocaleTimeString()}</span>
++                <span
++                  className={`px-1.5 py-0.5 rounded border text-[10px] uppercase font-semibold ${
++                    LEVEL_STYLE[log.level] || LEVEL_STYLE.info
++                  }`}
++                >
++                  {log.level}
++                </span>
++                <span className="text-solana-green">[{log.tag}]</span>
++              </div>
++              <p className="text-on-surface whitespace-pre-wrap break-words">{log.message}</p>
++              {log.meta != null && (
++                <pre className="mt-2 text-[10px] text-on-surface-variant overflow-x-auto max-h-40">
++                  {typeof log.meta === 'string' ? log.meta : JSON.stringify(log.meta, null, 2)}
++                </pre>
++              )}
++            </div>
++          ))}
++        </div>
++      </div>
++    </div>
++  );
++}
 -- 
 2.43.0
 
