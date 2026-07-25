@@ -289,6 +289,19 @@ export async function dbUpsertAgent(
   agent: PublicAgent,
   owner?: { ownerUserId?: string; ownerEmail?: string }
 ): Promise<PublicAgent> {
+  const existing = await prisma.catalogAgent.findUnique({
+    where: { agentId: agent.agent_id },
+  });
+  // Once an owner is bound, secret alone cannot hijack wallet/invoke — claim must match.
+  if (existing?.ownerUserId) {
+    const claim = owner?.ownerUserId ? String(owner.ownerUserId) : '';
+    if (!claim || claim !== existing.ownerUserId) {
+      throw new Error(
+        `CATALOG_OWNERSHIP: agent ${agent.agent_id} is owned; upsert requires matching owner_user_id`
+      );
+    }
+  }
+
   const row = await prisma.catalogAgent.upsert({
     where: { agentId: agent.agent_id },
     create: {

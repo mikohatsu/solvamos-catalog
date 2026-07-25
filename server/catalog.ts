@@ -246,6 +246,9 @@ export async function upsertAgent(input: Record<string, unknown>): Promise<Publi
     });
   }
 
+  // File-store fallback: remember owner in a side map is not available — reject
+  // wallet/invoke changes when a prior listing exists and claim is missing.
+  // (Production uses Postgres + ownerUserId; this path is local-only.)
   store.agents[agentId] = agent;
   saveStore();
   return agent;

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import express from 'express';
@@ -16,6 +17,10 @@ import {
 
 const rootDir = process.cwd();
 const isProd = process.env.NODE_ENV === 'production';
+const allowInsecureWrites =
+  !isProd &&
+  (process.env.ALLOW_INSECURE_CATALOG_WRITES === '1' ||
+    process.env.ALLOW_INSECURE_CATALOG_WRITES === 'true');
 
 const config: CatalogConfig = {
   port: Number(process.env.PORT || 4173),
@@ -36,13 +41,21 @@ const config: CatalogConfig = {
     .filter(Boolean),
 };
 
+function secretsEqual(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function assertAdmin(req: express.Request, res: express.Response): boolean {
   if (!config.adminSecret) {
-    // Dev convenience: allow writes when secret unset (local only)
-    if (!isProd) return true;
+    // Local opt-in only — never silently open writes.
+    if (allowInsecureWrites) return true;
     res.status(503).json({
       status: 'error',
-      message: 'CATALOG_ADMIN_SECRET is not configured on catalog service',
+      message:
+        'CATALOG_ADMIN_SECRET is not configured (set ALLOW_INSECURE_CATALOG_WRITES=1 for local-only open writes)',
     });
     return false;
   }
@@ -50,7 +63,7 @@ function assertAdmin(req: express.Request, res: express.Response): boolean {
     (req.headers['x-catalog-admin-secret'] as string) ||
     (req.headers['x-solvamos-catalog-secret'] as string) ||
     '';
-  if (provided !== config.adminSecret) {
+  if (!secretsEqual(provided, config.adminSecret)) {
     res.status(401).json({ status: 'error', message: 'Unauthorized catalog write' });
     return false;
   }
@@ -63,17 +76,32 @@ async function createApp() {
   app.use(express.json({ limit: '2mb' }));
 
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Accept, X-Catalog-Admin-Secret, X-Solvamos-Catalog-Secret'
-    );
-    if (req.method === 'GET') {
+    const studioOrigin = config.studioUrl.replace(/\/$/, '');
+    const reqOrigin = String(req.headers.origin || '').replace(/\/$/, '');
+    const isWrite =
+      req.method === 'POST' ||
+      req.method === 'PUT' ||
+      req.method === 'PATCH' ||
+      req.method === 'DELETE';
+
+    // Public reads stay open; writes are server-to-server (no * + admin header).
+    if (!isWrite) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
       res.setHeader('Cache-Control', 'public, max-age=10');
     } else {
       res.setHeader('Cache-Control', 'no-store');
+      if (reqOrigin && reqOrigin === studioOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+        res.setHeader('Access-Control-Allow-Methods', 'POST, PUT, DELETE, OPTIONS');
+        res.setHeader(
+          'Access-Control-Allow-Headers',
+          'Content-Type, Accept, X-Catalog-Admin-Secret, X-Solvamos-Catalog-Secret'
+        );
+      }
     }
+
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
