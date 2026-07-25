@@ -221,8 +221,7 @@ export async function dbListListed(opts: {
       endpoints: agent.endpoints,
       tenantId: agent.tenant_id,
       studioOrigin: agent.studio_origin,
-      ownerUserId: (rows.find((r) => r.agentId === agent.agent_id) as any)?.ownerUserId,
-      ownerEmail: (rows.find((r) => r.agentId === agent.agent_id) as any)?.ownerEmail,
+      // ownerUserId / ownerEmail intentionally omitted from public catalog API (PII).
       status: agent.status,
       listedAt: agent.listed_at,
       updatedAt: agent.updated_at,
