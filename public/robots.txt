@@ -1,0 +1,29 @@
+# SolVamos Catalog — AI crawlers welcome
+User-agent: *
+Allow: /
+Allow: /marketplace
+Allow: /a/
+Allow: /api/
+Allow: /llms.txt
+Allow: /marketplace.json
+Allow: /api/v1/agents
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+# Prefer machine APIs over HTML scraping:
+#   GET /llms.txt
+#   GET /api/v1/agents
+#   GET /api/catalog

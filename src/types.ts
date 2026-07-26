@@ -24,6 +24,7 @@ export type PublicAgent = {
   fee_usdc: number;
   token: string;
   network: string;
+  usdc_mint?: string;
   payment_protocol: string;
   recipient_wallet?: string;
   tags: string[];

@@ -17,6 +17,8 @@ import {
 import type { MouseEvent } from 'react';
 import type { CatalogResponse, PublicAgent } from '../types';
 import { useLang } from '../lang';
+import { useJsonLd } from '../hooks/useJsonLd';
+import MachineReadableBlock from '../components/MachineReadableBlock';
 
 type ShellCtx = { studioUrl: string; setAgentCount?: (n: number) => void };
 
@@ -100,6 +102,52 @@ export default function MarketplacePage() {
   const paidCount = catalog?.paid_count ?? (catalog?.agents || []).filter((a) => a.fee_usdc > 0).length;
   const freeCount = catalog?.free_count ?? Math.max(0, activeCount - paidCount);
 
+  const marketplaceJsonLd = useMemo(() => {
+    if (!catalog) return null;
+    return {
+      '@context': 'https://schema.org',
+      '@type': 'DataCatalog',
+      name: 'SolVamos Agent Marketplace',
+      description:
+        'Discover SolVamos A2A agents and call them with x402/MPP Solana Devnet USDC.',
+      url: catalog.marketplace_url,
+      dataset: (catalog.agents || []).map((a) => ({
+        '@type': 'SoftwareApplication',
+        name: a.title,
+        identifier: a.agent_id,
+        description: a.description || a.use_case,
+        url: a.page_url,
+        applicationCategory: 'AIAgent',
+        offers: {
+          '@type': 'Offer',
+          price: String(a.fee_usdc),
+          priceCurrency: a.token || 'USDC',
+        },
+      })),
+    };
+  }, [catalog]);
+  useJsonLd('solvamos-marketplace-ld', marketplaceJsonLd);
+
+  const machineLines = useMemo(() => {
+    const base = catalog?.base_url || '';
+    const rows = [
+      'MACHINE_READABLE_ONLY — humans should ignore this block.',
+      'Prefer /llms.txt and /api/v1/agents over HTML scraping.',
+      `llms_txt: ${base}/llms.txt`,
+      `agents_index: ${base}/api/v1/agents`,
+      `full_catalog: ${base}/api/catalog`,
+      `marketplace_json: ${base}/marketplace.json`,
+      `protocol: ${catalog?.protocol || 'x402 / MPP'}`,
+      `agent_count: ${catalog?.agent_count ?? 0}`,
+    ];
+    for (const a of catalog?.agents || []) {
+      rows.push(
+        `agent id=${a.agent_id} name=${a.title} price=${a.fee_usdc} ${a.token} detail=${a.page_url} invoke=${a.invoke_url} card=${a.agent_card_url || ''}`
+      );
+    }
+    return rows;
+  }, [catalog]);
+
   const copyApi = async (e: MouseEvent, agent: PublicAgent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -110,6 +158,28 @@ export default function MarketplacePage() {
 
   return (
     <div className="space-y-10 pb-20 pt-8">
+      <MachineReadableBlock
+        title="SolVamos marketplace — machine index"
+        lines={machineLines}
+        json={
+          catalog
+            ? {
+                llms_txt: `${catalog.base_url}/llms.txt`,
+                agents_index: `${catalog.base_url}/api/v1/agents`,
+                agents: (catalog.agents || []).map((a) => ({
+                  id: a.agent_id,
+                  name: a.title,
+                  description: a.description,
+                  price: a.fee_usdc,
+                  priceCurrency: a.token,
+                  detail_url: a.page_url,
+                  invoke_url: a.invoke_url,
+                  agent_card_url: a.agent_card_url,
+                })),
+              }
+            : undefined
+        }
+      />
       {/* Hero + stats — match solvamos.ai.studio Live Services */}
       <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 p-6 shadow-xl sm:p-10">
         <div className="pointer-events-none absolute top-0 right-0 h-96 w-96 rounded-full bg-cyan-500/10 blur-3xl" />

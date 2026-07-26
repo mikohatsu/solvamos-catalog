@@ -14,6 +14,11 @@ import {
   upsertAgent,
   type CatalogConfig,
 } from './server/catalog.js';
+import {
+  buildAgentsIndex,
+  buildLlmsTxt,
+  buildRobotsTxt,
+} from './server/llm-discovery.js';
 
 const rootDir = process.cwd();
 const isProd = process.env.NODE_ENV === 'production';
@@ -46,6 +51,17 @@ function secretsEqual(provided: string, expected: string): boolean {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+/** Paths that must never fall through to the SPA HTML shell. */
+function isMachinePath(pathname: string): boolean {
+  return (
+    pathname.startsWith('/api') ||
+    pathname === '/health' ||
+    pathname === '/llms.txt' ||
+    pathname === '/robots.txt' ||
+    pathname === '/marketplace.json'
+  );
 }
 
 function assertAdmin(req: express.Request, res: express.Response): boolean {
@@ -127,6 +143,40 @@ async function createApp() {
       typeof req.query.studioOrigin === 'string' ? req.query.studioOrigin : undefined;
     res.json(await buildPublicCatalog({ tenantId, studioOrigin }));
   });
+
+  /** AI agent welcome file — prefer this over HTML scraping */
+  app.get('/llms.txt', async (_req, res) => {
+    const catalog = await buildPublicCatalog();
+    res
+      .status(200)
+      .type('text/plain; charset=utf-8')
+      .set('Cache-Control', 'public, max-age=30')
+      .send(buildLlmsTxt(catalog));
+  });
+
+  app.get('/robots.txt', (_req, res) => {
+    res
+      .status(200)
+      .type('text/plain; charset=utf-8')
+      .set('Cache-Control', 'public, max-age=300')
+      .send(buildRobotsTxt(config.publicBaseUrl));
+  });
+
+  /** Slim machine index (also aliased as /marketplace.json, /api/v1/agents) */
+  const sendAgentsIndex = async (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    const tenantId = typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined;
+    const catalog = await buildPublicCatalog({ tenantId });
+    res
+      .status(200)
+      .type('application/json; charset=utf-8')
+      .set('Cache-Control', 'public, max-age=10')
+      .json(buildAgentsIndex(catalog));
+  };
+  app.get('/api/v1/agents', sendAgentsIndex);
+  app.get('/marketplace.json', sendAgentsIndex);
 
   /** Studio → catalog upsert (source of truth write path) */
   app.post('/api/catalog/agents', async (req, res) => {
@@ -240,7 +290,7 @@ async function createApp() {
   if (fs.existsSync(path.join(clientDir, 'index.html'))) {
     app.use(express.static(clientDir));
     app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api') || req.path === '/health') return next();
+      if (isMachinePath(req.path)) return next();
       res.sendFile(path.join(clientDir, 'index.html'));
     });
     return app;
@@ -254,7 +304,7 @@ async function createApp() {
     });
     app.use(vite.middlewares);
     app.use(async (req, res, next) => {
-      if (req.originalUrl.startsWith('/api') || req.originalUrl === '/health') return next();
+      if (isMachinePath(req.path)) return next();
       try {
         const url = req.originalUrl;
         let template = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf-8');

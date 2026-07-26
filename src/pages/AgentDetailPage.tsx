@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { ArrowLeft, Bot, ExternalLink, RefreshCw } from 'lucide-react';
 import type { PublicAgent } from '../types';
 import CopyButton from '../components/CopyButton';
+import MachineReadableBlock from '../components/MachineReadableBlock';
+import { useHeadLinks, useJsonLd } from '../hooks/useJsonLd';
 import { useLang } from '../lang';
 
 type ShellCtx = { studioUrl: string };
@@ -58,8 +60,107 @@ export default function AgentDetailPage() {
       : `curl -X POST "${agent.invoke_url}" -H "Content-Type: application/json" -d "{\\"prompt\\":\\"안녕하세요\\"}"`
     : '';
 
+  const agentJsonLd = useMemo(() => {
+    if (!agent) return null;
+    return {
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareApplication',
+      name: agent.title,
+      identifier: agent.agent_id,
+      description: agent.description || agent.use_case,
+      url: agent.page_url,
+      applicationCategory: 'AIAgent',
+      offers: {
+        '@type': 'Offer',
+        price: String(agent.fee_usdc),
+        priceCurrency: agent.token || 'USDC',
+      },
+      potentialAction: {
+        '@type': 'ConsumeAction',
+        target: agent.invoke_url,
+        description:
+          'Invoke with JSON { prompt } or ?prompt= ; paid agents require x402/MPP',
+      },
+    };
+  }, [agent]);
+  useJsonLd('solvamos-agent-ld', agentJsonLd);
+
+  const headLinks = useMemo(() => {
+    if (!agent) return [];
+    const links = [
+      {
+        id: 'solvamos-link-agent-card',
+        rel: 'agent-card',
+        type: 'application/json',
+        href: agent.agent_card_url || '',
+      },
+      {
+        id: 'solvamos-link-markdown',
+        rel: 'alternate',
+        type: 'text/markdown',
+        href: agent.markdown_url,
+      },
+      {
+        id: 'solvamos-link-json',
+        rel: 'alternate',
+        type: 'application/json',
+        href: agent.api_url,
+      },
+    ];
+    return links.filter((l) => !!l.href);
+  }, [agent]);
+  useHeadLinks(headLinks);
+
+  const machineLines = useMemo(() => {
+    if (!agent) return ['MACHINE_READABLE_ONLY — agent not loaded'];
+    return [
+      'MACHINE_READABLE_ONLY — humans should ignore this block.',
+      `agent_id: ${agent.agent_id}`,
+      `title: ${agent.title}`,
+      `description: ${agent.description || agent.use_case}`,
+      `use_case: ${agent.use_case}`,
+      `invoke_url: ${agent.invoke_url}`,
+      `payment_protocol: ${agent.payment_protocol}`,
+      `fee_usdc: ${agent.fee_usdc}`,
+      `network: ${agent.network}`,
+      `usdc_mint: ${agent.usdc_mint || ''}`,
+      `agent_card_url: ${agent.agent_card_url || ''}`,
+      `markdown_url: ${agent.markdown_url}`,
+      'input: JSON { "prompt": string } or ?prompt=',
+      'paid_flow: unpaid invoke → HTTP 402 x402/MPP challenge → pay → retry',
+    ];
+  }, [agent]);
+
   return (
     <div className="space-y-6 pb-16 pt-10">
+      <MachineReadableBlock
+        title={`SolVamos agent ${agentId} — machine binding`}
+        lines={machineLines}
+        json={
+          agent
+            ? {
+                agent_id: agent.agent_id,
+                description: agent.description || agent.use_case,
+                invoke_url: agent.invoke_url,
+                agent_card_url: agent.agent_card_url,
+                markdown_url: agent.markdown_url,
+                payment_protocol: agent.payment_protocol,
+                fee_usdc: agent.fee_usdc,
+                network: agent.network,
+                input_schema: {
+                  type: 'object',
+                  properties: {
+                    prompt: {
+                      type: 'string',
+                      description: 'Natural-language question for this agent',
+                    },
+                  },
+                  required: ['prompt'],
+                },
+              }
+            : undefined
+        }
+      />
       <Link
         to="/marketplace"
         className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-cyan-300"

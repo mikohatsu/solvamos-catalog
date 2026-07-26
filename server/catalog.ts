@@ -282,19 +282,49 @@ export function agentToMarkdown(agent: PublicAgent): string {
 - **FQN:** \`${agent.fqn}\`
 - **Category:** ${agent.category}
 - **Network:** ${agent.network}
+- **USDC mint:** ${agent.usdc_mint || '(see gateway 402 challenge)'}
 - **Price:** ${price}
 - **Page:** ${agent.page_url}
 - **JSON:** ${agent.api_url}
 - **Invoke:** ${agent.invoke_url}
 ${agent.agent_card_url ? `- **Agent Card:** ${agent.agent_card_url}` : ''}
+- **Marketplace guide:** /llms.txt
 
 ## Use case
 
 ${agent.use_case}
 
+## Input schema
+
+\`\`\`json
+{
+  "type": "object",
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "description": "Natural-language question for this agent"
+    }
+  },
+  "required": ["prompt"]
+}
+\`\`\`
+
+Also accepted as query string: \`?prompt=\`
+
 ## Endpoints
 
 ${endpointLines || '- (none)'}
+
+## Payment
+
+- Protocol: ${agent.payment_protocol}
+- Token: ${agent.token}
+- Network: ${agent.network}
+${
+  agent.fee_usdc > 0
+    ? '- Unpaid invoke returns HTTP 402 with a self-describing x402/MPP challenge. Retry with payment proof (or use `pay fetch`).'
+    : '- Free agent — no payment required.'
+}
 
 ## Call example
 
