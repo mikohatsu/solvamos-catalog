@@ -14,6 +14,14 @@ function asEndpoints(value: unknown): AgentEndpoint[] | undefined {
   return value as AgentEndpoint[];
 }
 
+/** Public Cloud Run / internet hosts must be HTTPS for external AI fetchers. */
+export function forceHttpsPublicUrl(url: string): string {
+  const raw = String(url || '').trim();
+  if (!raw || LOCAL_HOST_RE.test(raw)) return raw;
+  if (/^http:\/\//i.test(raw)) return raw.replace(/^http:\/\//i, 'https://');
+  return raw;
+}
+
 /** Rewrite stale local Lab URLs to the live Studio / gateway origin. */
 export function rewriteServiceUrl(
   url: string | null | undefined,
@@ -21,8 +29,10 @@ export function rewriteServiceUrl(
   opts?: { gatewayUrl?: string; feeUsdc?: number; agentId?: string }
 ): string {
   const raw = String(url || '').trim();
-  const studio = studioUrl.replace(/\/$/, '');
-  const gateway = (opts?.gatewayUrl || process.env.PAY_GATEWAY_URL || '').replace(/\/$/, '');
+  const studio = forceHttpsPublicUrl(studioUrl.replace(/\/$/, ''));
+  const gateway = forceHttpsPublicUrl(
+    (opts?.gatewayUrl || process.env.PAY_GATEWAY_URL || '').replace(/\/$/, '')
+  );
   const fee = opts?.feeUsdc ?? 0;
   const agentId = opts?.agentId || '';
 
@@ -36,7 +46,7 @@ export function rewriteServiceUrl(
   } else if (LOCAL_HOST_RE.test(out) && studio) {
     out = out.replace(LOCAL_HOST_RE, studio);
   }
-  return out;
+  return forceHttpsPublicUrl(out);
 }
 
 function rewriteOriginFields(
