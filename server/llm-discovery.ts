@@ -17,6 +17,7 @@ export type AgentsIndexItem = {
   invoke_url: string;
   api_url: string;
   markdown_url: string;
+  /** SolVamos discovery Agent Card (A2A-shaped JSON; not Google A2A JSON-RPC). */
   agent_card_url: string | null;
   usdc_mint?: string;
   /** Discovery hint only — pay using the live HTTP 402 challenge, not these fields. */
@@ -123,8 +124,7 @@ export function buildLlmsTxt(catalog: PublicCatalog): string {
   const base = catalog.base_url.replace(/\/$/, '');
   const studio = (catalog.studio_url || '').replace(/\/$/, '');
   const lines = (catalog.agents || []).slice(0, 50).map((a) => {
-    const price =
-      a.fee_usdc > 0 ? `${a.fee_usdc} ${a.token}` : 'free';
+    const price = a.fee_usdc > 0 ? `${a.fee_usdc} ${a.token}` : 'free';
     return `- [${a.title}](${a.page_url}): ${oneLine(a.description || a.use_case)} · ${price} · invoke ${a.invoke_url}`;
   });
 
@@ -140,7 +140,7 @@ Listed-Agents: ${catalog.agent_count} (paid=${catalog.paid_count}, free=${catalo
 ## Quick Start for Agents
 1. GET ${base}/api/v1/agents  (slim JSON index)  OR  GET ${base}/api/catalog  (full catalog)
 2. Pick an agent by description / use_case / tags
-3. GET agent_card_url (A2A card on Studio) and/or markdown_url
+3. GET agent_card_url (SolVamos discovery card on Studio) and/or markdown_url
 4. Call invoke_url:
    - paid: HTTP 402 challenge → pay with x402/MPP Solana Devnet USDC → retry with payment proof
    - free: plain HTTP GET/POST with \`prompt\`
@@ -157,13 +157,16 @@ Listed-Agents: ${catalog.agent_count} (paid=${catalog.paid_count}, free=${catalo
 - Human marketplace: ${base}/marketplace
 - Human detail: ${base}/a/{agent_id}
 
-## Agent Card & invoke (Studio / Gateway)
-- A2A Agent Card: GET {studio}/api/agents/{agent_id}/agent-card  (HTTPS only)
+## Studio / Gateway URLs
+- Discovery Agent Card: GET {studio}/api/agents/{agent_id}/agent-card
 - Paid invoke (typical): GET|POST {pay-gateway}/v1/agents/{agent_id}/invoke
 - Free invoke (typical): POST {studio}/api/agents/{agent_id}/invoke
-- Protocol: x402 / MPP · Solana Devnet USDC
+- Commerce protocol: x402 / MPP · Solana Devnet USDC
 
-## Payment (source of truth = HTTP 402)
+SolVamos does **not** expose Google A2A JSON-RPC \`message/send\` as a public commerce path.
+Agent Cards are discovery documents; execution is always \`invoke_url\`.
+
+## Payment (source of truth = HTTP 402 on invoke_url)
 1. Call invoke_url without payment → expect 402
 2. Parse \`WWW-Authenticate: Payment … request="<base64url-json>"\`
 3. Build the Solana tx ONLY from that JSON (\`amount\`, \`currency\`, \`recipient\`, \`methodDetails.*\`)
@@ -213,7 +216,7 @@ export function buildMarketplaceJsonLd(catalog: PublicCatalog) {
     '@type': 'DataCatalog',
     name: 'SolVamos Agent Marketplace',
     description:
-      'Discover SolVamos A2A agents and call them with x402/MPP Solana Devnet USDC.',
+      'Discover SolVamos RAG agents and call them with x402/MPP Solana Devnet USDC.',
     url: catalog.marketplace_url,
     dataset: (catalog.agents || []).map((a) => ({
       '@type': 'SoftwareApplication',

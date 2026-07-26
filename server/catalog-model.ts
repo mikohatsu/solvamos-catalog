@@ -29,6 +29,7 @@ export type PublicAgent = {
   tone?: string;
   invoke_url: string;
   origin_invoke_url?: string;
+  /** SolVamos discovery Agent Card (Studio /api/agents/…/agent-card). A2A-shaped JSON; not a JSON-RPC endpoint. */
   agent_card_url?: string;
   page_url: string;
   api_url: string;
@@ -98,6 +99,13 @@ function buildEndpoints(invokeUrl: string, fee: number, protocol: string): Agent
   ];
 }
 
+function defaultUseCase(fee: number, protocol: string): string {
+  if (fee > 0) {
+    return `Call with pay fetch on invoke_url (${protocol}; live HTTP 402 is source of truth).`;
+  }
+  return `Call with plain HTTP GET/POST on invoke_url (${protocol}).`;
+}
+
 export function finalizeAgent(
   partial: Partial<PublicAgent> & { agent_id: string },
   catalogBase: string
@@ -118,9 +126,7 @@ export function finalizeAgent(
     agent_id: agentId,
     title: String(partial.title || agentId),
     description: String(partial.description || ''),
-    use_case:
-      partial.use_case ||
-      `Call this SolVamos RAG agent with ${protocol === 'free' ? 'plain HTTP' : 'pay fetch (x402/MPP)'}.`,
+    use_case: partial.use_case || defaultUseCase(fee, protocol),
     category: partial.category || 'ai_ml',
     role: partial.role,
     tone: partial.tone,
@@ -136,7 +142,7 @@ export function finalizeAgent(
     usdc_mint: partial.usdc_mint,
     payment_protocol: protocol,
     recipient_wallet: partial.recipient_wallet,
-    tags: Array.isArray(partial.tags) ? partial.tags.map(String) : ['solvamos', 'a2a', 'x402'],
+    tags: Array.isArray(partial.tags) ? partial.tags.map(String) : ['solvamos', 'x402'],
     source: String(partial.source || partial.studio_origin || 'studio'),
     studio_origin: partial.studio_origin,
     tenant_id: partial.tenant_id,

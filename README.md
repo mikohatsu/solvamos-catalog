@@ -80,10 +80,10 @@ Prisma migration은 Studio repository가 소유한다. Catalog 배포에서는 `
 `CatalogAgent`는 다음 정보를 제공한다.
 
 - agent ID/FQN/title/description/category/tags
-- Studio origin과 Agent Card URL
+- Studio origin과 discovery Agent Card URL (`/api/agents/:id/agent-card`)
 - `feeUsdc`, token, network, USDC mint
 - payment protocol
-- public invoke URL
+- public invoke URL (유일한 상업 실행 경로)
 - recipient vault
 - owner/tenant metadata
 - listed/unlisted/paused 상태
@@ -99,6 +99,8 @@ Catalog invoke_url
   → USDC payment
   → gateway proxy to Studio internal /v1/agents/:id/invoke
 ```
+
+Google A2A JSON-RPC(`message/send`)는 공개 커머스 경로로 쓰지 않는다. Agent Card는 디스커버리 문서이고 실행은 항상 `invoke_url`이다. 자세한 정책은 Studio `docs/A2A.md`.
 
 현재 gateway provider는 `0.001` 고정 metering이고 Catalog fee는 가변이므로 동적 가격 동기화가 후속 P0 과제다.
 

@@ -216,7 +216,7 @@ export default function AgentDetailPage() {
             <Row label="Markdown card" value={agent.markdown_url} copied={copied === 'md'} onCopy={() => copy(agent.markdown_url, 'md')} />
             {agent.agent_card_url && (
               <Row
-                label="A2A Agent Card"
+                label="Agent Card"
                 value={agent.agent_card_url}
                 copied={copied === 'card'}
                 onCopy={() => copy(agent.agent_card_url!, 'card')}

@@ -149,7 +149,15 @@ export async function buildPublicCatalog(filter?: {
       studioOrigin: filter?.studioOrigin,
     });
   }
-  const agents = listedAgents(filter);
+  const agents = listedAgents(filter).map((a) =>
+    finalizeAgent(
+      {
+        ...a,
+        studio_origin: a.studio_origin || studioUrl || undefined,
+      },
+      baseUrl
+    )
+  );
   const paid_count = agents.filter((a) => a.fee_usdc > 0).length;
   return {
     version: 1,
@@ -164,7 +172,7 @@ export async function buildPublicCatalog(filter?: {
     paid_count,
     free_count: agents.length - paid_count,
     payment_hint:
-      'Paid agents: pay fetch "<invoke_url>?prompt=hello" (x402/MPP). Free agents: plain HTTP POST. CatalogAgent DB is source of truth when DATABASE_URL is set.',
+      'Paid agents: pay fetch "<invoke_url>?prompt=…" (x402/MPP; live 402 is source of truth). Free agents: plain HTTP POST/GET on invoke_url.',
     store: 'solvamos-catalog',
     agents,
     data: agents.map(toStudioMirror),
@@ -184,7 +192,13 @@ export async function findAgent(idOrFqn: string): Promise<PublicAgent | null> {
       (a) => a.catalog_id === key || a.fqn === key || a.fqn === `solvamos/${key}` || a.fqn === idOrFqn
     );
   if (!agent || agent.status !== 'listed') return null;
-  return finalizeAgent(agent, baseUrl);
+  return finalizeAgent(
+    {
+      ...agent,
+      studio_origin: agent.studio_origin || studioUrl || undefined,
+    },
+    baseUrl
+  );
 }
 
 export async function upsertAgent(input: Record<string, unknown>): Promise<PublicAgent> {
@@ -287,7 +301,7 @@ export function agentToMarkdown(agent: PublicAgent): string {
 - **Page:** ${agent.page_url}
 - **JSON:** ${agent.api_url}
 - **Invoke:** ${agent.invoke_url}
-${agent.agent_card_url ? `- **Agent Card:** ${agent.agent_card_url}` : ''}
+${agent.agent_card_url ? `- **Agent Card (discovery):** ${agent.agent_card_url}` : ''}
 - **Marketplace guide:** /llms.txt
 
 ## Use case

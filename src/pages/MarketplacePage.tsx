@@ -109,7 +109,7 @@ export default function MarketplacePage() {
       '@type': 'DataCatalog',
       name: 'SolVamos Agent Marketplace',
       description:
-        'Discover SolVamos A2A agents and call them with x402/MPP Solana Devnet USDC.',
+        'Discover SolVamos RAG agents and call them with x402/MPP Solana Devnet USDC.',
       url: catalog.marketplace_url,
       dataset: (catalog.agents || []).map((a) => ({
         '@type': 'SoftwareApplication',

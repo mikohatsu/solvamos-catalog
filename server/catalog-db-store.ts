@@ -158,7 +158,7 @@ export function rowToPublic(
       recipient_wallet: row.recipientWallet || undefined,
       tags: row.tags || [],
       source: row.source,
-      studio_origin: rewritten.studioOrigin || undefined,
+      studio_origin: rewritten.studioOrigin || studio || undefined,
       tenant_id: row.tenantId || undefined,
       status: (row.status as AgentStatus) || 'listed',
       listed_at: row.listedAt.toISOString(),
@@ -204,7 +204,7 @@ export async function dbListListed(opts: {
     paid_count,
     free_count: agents.length - paid_count,
     payment_hint:
-      'Paid agents: pay fetch "<invoke_url>?prompt=hello" (x402/MPP). Free agents: plain HTTP POST. CatalogAgent table is source of truth.',
+      'Paid agents: pay fetch "<invoke_url>?prompt=…" (x402/MPP; live 402 is source of truth). Free agents: plain HTTP POST/GET on invoke_url.',
     store: 'solvamos-catalog',
     agents,
     data: agents.map((agent) => ({
