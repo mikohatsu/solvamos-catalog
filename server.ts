@@ -190,8 +190,25 @@ async function createApp() {
             ? body.studioOrigin
             : undefined;
       const payload = body.agent || body.listing || body;
+      const listing = (payload && typeof payload === 'object' ? payload : {}) as Record<
+        string,
+        unknown
+      >;
+      // Owner may be on the listing OR on the top-level POST body (Studio publishToRemote).
       const normalized = normalizeStudioPayload(
-        payload as Record<string, unknown>,
+        {
+          ...listing,
+          ownerUserId:
+            listing.ownerUserId ||
+            listing.owner_user_id ||
+            body.owner_user_id ||
+            body.ownerUserId,
+          ownerEmail:
+            listing.ownerEmail ||
+            listing.owner_email ||
+            body.owner_email ||
+            body.ownerEmail,
+        },
         studioOrigin
       );
       const agent = await upsertAgent(normalized);
