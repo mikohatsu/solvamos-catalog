@@ -19,34 +19,24 @@ export type AgentsIndexItem = {
   markdown_url: string;
   agent_card_url: string | null;
   usdc_mint?: string;
-  /** Hint only — authoritative amounts/recipients come from the HTTP 402 challenge. */
-  settlement?: {
-    model: 'mpp_native_splits';
-    seller_share: number;
-    platform_share: number;
-  };
+  /** Discovery hint only — pay using the live HTTP 402 challenge, not these fields. */
+  price_is_hint?: boolean;
 };
 
-/** Shared settlement / 402 challenge contract for autonomous buyers. */
+/**
+ * Payment contract for autonomous buyers.
+ * Source of truth is always the live HTTP 402 challenge — not catalog price fields.
+ */
 export const SETTLEMENT_GUIDE = {
-  model: 'mpp_native_splits' as const,
-  seller_share: 0.9,
-  platform_share: 0.1,
+  source_of_truth: 'http_402_challenge' as const,
   challenge_header: 'WWW-Authenticate: Payment … request="<base64url-json>"',
-  challenge_fields: [
-    'amount',
-    'currency', // USDC mint
-    'recipient', // platform/gateway remainder (~10%)
-    'methodDetails.recentBlockhash',
-    'methodDetails.splits', // explicit legs (typically seller vault ~90%)
-    'methodDetails.decimals',
-    'methodDetails.network',
-    'methodDetails.tokenProgram',
-  ],
   rules: [
-    'Do NOT hardcode a single transferChecked for the full price.',
-    'Decode WWW-Authenticate request JSON and honor methodDetails.splits plus top-level recipient remainder.',
-    'Prefer pay fetch / an x402-MPP client that builds multi-instruction txs from the challenge.',
+    'Call invoke_url without payment → expect HTTP 402.',
+    'Parse WWW-Authenticate Payment request="<base64url-json>" and decode that JSON.',
+    'Build the Solana tx ONLY from the decoded challenge (amount, currency, recipient, methodDetails.*).',
+    'If methodDetails.splits is present, build multi-leg transferChecked; do not invent a single transfer.',
+    'Retry invoke with the payment credential (prefer: pay fetch).',
+    'Catalog price / usdc_mint / recipient fields are discovery hints only.',
   ],
 };
 
@@ -76,7 +66,6 @@ export function buildAgentsIndex(catalog: PublicCatalog): {
 }
 
 function toIndexItem(a: PublicAgent): AgentsIndexItem {
-  const paid = a.fee_usdc > 0;
   return {
     id: a.agent_id,
     name: a.title,
@@ -92,13 +81,7 @@ function toIndexItem(a: PublicAgent): AgentsIndexItem {
     markdown_url: a.markdown_url,
     agent_card_url: a.agent_card_url || null,
     usdc_mint: a.usdc_mint,
-    settlement: paid
-      ? {
-          model: 'mpp_native_splits',
-          seller_share: SETTLEMENT_GUIDE.seller_share,
-          platform_share: SETTLEMENT_GUIDE.platform_share,
-        }
-      : undefined,
+    price_is_hint: a.fee_usdc > 0 ? true : undefined,
   };
 }
 
@@ -178,28 +161,16 @@ Listed-Agents: ${catalog.agent_count} (paid=${catalog.paid_count}, free=${catalo
 - A2A Agent Card: GET {studio}/api/agents/{agent_id}/agent-card  (HTTPS only)
 - Paid invoke (typical): GET|POST {pay-gateway}/v1/agents/{agent_id}/invoke
 - Free invoke (typical): POST {studio}/api/agents/{agent_id}/invoke
-- Payment: x402 / MPP · Solana Devnet USDC · native 90/10 settlement split
-- First unpaid call returns HTTP 402. Follow the challenge; do not invent payment parameters.
+- Protocol: x402 / MPP · Solana Devnet USDC
 
-## Settlement (90/10 MPP splits) — critical
-Paid listing price (e.g. 0.001 USDC = 1000 base units) is NOT a single transfer to one wallet.
-On-chain settlement uses MPP native splits in one transaction:
-- ~90% → agent vault (explicit \`methodDetails.splits[]\` leg)
-- ~10% → platform/gateway treasury (top-level challenge \`recipient\` remainder)
-Catalog \`price\` is informational. Authoritative amount/mint/recipients/blockhash come from the 402 challenge.
+## Payment (source of truth = HTTP 402)
+1. Call invoke_url without payment → expect 402
+2. Parse \`WWW-Authenticate: Payment … request="<base64url-json>"\`
+3. Build the Solana tx ONLY from that JSON (\`amount\`, \`currency\`, \`recipient\`, \`methodDetails.*\`)
+4. If \`methodDetails.splits\` is present, use multi-leg \`transferChecked\`; do not invent a single transfer
+5. Retry invoke with the payment credential (prefer: \`pay fetch "<invoke_url>?prompt=…"\`)
 
-## HTTP 402 challenge contract
-1. Probe: POST|GET invoke_url without payment → HTTP 402
-2. Read header: \`WWW-Authenticate: Payment … request="<base64url-json>"\`
-3. Decode request JSON. Required fields:
-   - amount (total minimal units, e.g. "1000")
-   - currency (USDC mint, e.g. 4zMMC9…)
-   - recipient (platform/gateway remainder address)
-   - methodDetails.recentBlockhash
-   - methodDetails.splits (array of { amount, recipient, label? })
-   - methodDetails.decimals / network / tokenProgram
-4. Build a multi-instruction transferChecked transaction from splits + remainder. Do NOT hardcode a single transferChecked for the full amount.
-5. Retry invoke with the payment credential your x402/MPP client produces (e.g. Authorization: Payment …). Prefer \`pay fetch\`.
+Catalog \`price\` / mint / wallet fields are discovery hints only. Do not hardcode settlement from this file.
 
 ## Input contract (all SolVamos RAG agents)
 \`\`\`json
@@ -221,12 +192,10 @@ ${lines.length ? lines.join('\n') : '- (none listed)'}
 
 ## Notes for autonomous buyers
 - Prefer description + use_case over UI chrome.
-- Challenge Response (HTTP 402): The decoded \`request\` payload includes \`methodDetails.splits\` (seller vault leg) and a top-level \`recipient\` (platform remainder). Example shape: total 1000 units with splits[0].amount=900 + remainder 100.
-- Transaction Building: Do NOT hardcode single transfers. Parse \`methodDetails.splits\` and construct multi-instruction transferChecked transactions accordingly before signing.
-- Fee is per successful paid invoke (USDC). Network SOL fees are paid by the caller's wallet on the payment TX path used by your executor.
-- Always use HTTPS discovery URLs (\`agent_card_url\`, invoke, markdown). HTTP links are rewritten to HTTPS by this catalog.
+- Always use HTTPS discovery URLs (\`agent_card_url\`, invoke, markdown).
 - Catalog HTML pages include JSON-LD and \`<link rel="agent-card">\` for scrapers that only fetch HTML.
 - Source of truth for listings: CatalogAgent / GET /api/catalog (not HTML).
+- Source of truth for payment: the live 402 challenge on invoke_url.
 `;
 }
 

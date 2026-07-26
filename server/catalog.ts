@@ -322,7 +322,7 @@ ${endpointLines || '- (none)'}
 - Network: ${agent.network}
 ${
   agent.fee_usdc > 0
-    ? '- Unpaid invoke returns HTTP 402 with a self-describing x402/MPP challenge. Retry with payment proof (or use `pay fetch`).'
+    ? '- Source of truth: unpaid invoke → HTTP 402 `WWW-Authenticate` request JSON. Build the tx only from that challenge (honor `methodDetails.splits` if present). Prefer `pay fetch`. Catalog price is a hint only.'
     : '- Free agent — no payment required.'
 }
 
