@@ -61,7 +61,7 @@ npm run dev
 형제 저장소:
 
 - Studio: https://github.com/minvamos/solvamos-studio
-- 외부 검증 Buyer: https://github.com/minvamos/solvamos_test_external_agent
+- 외부 검증 Buyer: https://github.com/mikohatsu/solvamos_test_external_agent
 
 ## Production
 
