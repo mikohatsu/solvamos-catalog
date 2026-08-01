@@ -45,11 +45,23 @@ Production에서는 secret이 없으면 write API가 503, 값이 다르면 401�
 
 ## Quick start
 
+전체 로컬 스택(Studio · Catalog · pay-gateway · 외부 Buyer)은 Studio README를 본다:  
+https://github.com/minvamos/solvamos-studio#설치-및-로컬-구동-quickstart
+
+Catalog만:
+
 ```bash
 cp .env.example .env
 npm install
 npm run dev
+# → http://127.0.0.1:4173
+# DATABASE_URL 없으면 file fallback (.data/catalog-store.json)
 ```
+
+형제 저장소:
+
+- Studio: https://github.com/minvamos/solvamos-studio
+- 외부 검증 Buyer: https://github.com/minvamos/solvamos_test_external_agent
 
 ## Production
 
